@@ -1,3 +1,6 @@
 venv/
 .fpl_cache/
 *.csv
+__pycache__/
+models/
+*.json

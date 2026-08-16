@@ -2,43 +2,54 @@
 FPL ML Pipeline — Phase 1: Data Ingestion
 =========================================
 
-Pulls the current-season, player-by-gameweek history from the official
-Fantasy Premier League API and flattens it into a single tidy DataFrame
-(one row = one player-gameweek), exported to `fpl_raw_gameweek_data.csv`.
+Two ingestion sources, one harmonised schema:
 
-Endpoints used
---------------
-  bootstrap-static/            -> elements (players), teams, element_types (positions)
-  element-summary/{id}/        -> history (current season, per-gameweek rows)
+  LIVE       official FPL API (current season, refreshed every gameweek)
+             bootstrap-static/       -> elements, teams, element_types
+             element-summary/{id}/   -> history (per-gameweek rows)
+
+  HISTORICAL vaastav/Fantasy-Premier-League GitHub archive (completed seasons)
+             data/{season}/gws/merged_gw.csv
+             data/{season}/teams.csv  (per-season opponent id -> short name)
+
+Outputs
+-------
+  fpl_raw_gameweek_data.csv   live current-season rows only
+  fpl_combined_history.csv    historical seasons + live, one tidy schema
 
 Usage
 -----
-    python fpl_ingest.py
-    python fpl_ingest.py --delay 0.5 --output data/fpl_raw_gameweek_data.csv
-    python fpl_ingest.py --limit 25 --log-level DEBUG      # quick smoke test
-    python fpl_ingest.py --no-cache                        # ignore on-disk cache
+    python fpl_ingest.py                                  # live + historical
+    python fpl_ingest.py --skip-historical                # live only
+    python fpl_ingest.py --skip-live                      # archive only (fast)
+    python fpl_ingest.py --seasons 2023-24 2024-25 2025-26
+    python fpl_ingest.py --limit 25 --log-level DEBUG     # smoke test
 
-Design notes
-------------
-* Modular: a thin HTTP client (`FPLClient`) + pure transform functions, so the
-  transform layer is unit-testable without touching the network.
-* Resilient: session-level retry/backoff on 429/5xx, per-player try/except so a
-  single bad response never kills a multi-minute run.
-* Polite: configurable inter-request delay (default 0.5s) + a real User-Agent.
-* Resumable: raw JSON responses are cached to disk, so a re-run after a failure
-  costs seconds instead of ~10 minutes.
+Schema caveats (read these before modelling)
+--------------------------------------------
+* `player_id` and `opponent_team_id` are SEASON-SCOPED. Always join on
+  (`season`, `player_id`), never on `player_id` alone. `player_name` is the
+  practical cross-season key.
+* `now_cost` is today's price and is only populated for the live season. Use
+  `gw_cost` (price at that gameweek) as a feature — `now_cost` on historical
+  rows would be lookahead.
+* `xp` (FPL's own expected points) exists only in the archive; the live
+  element-summary endpoint does not expose it. Useful as a benchmark, but it is
+  NaN for the current season.
+* `defensive_contribution` was introduced in 2025/26 — NaN for earlier seasons.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import logging
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import pandas as pd
 import requests
@@ -58,6 +69,12 @@ BASE_URL = "https://fantasy.premierleague.com/api"
 BOOTSTRAP_URL = f"{BASE_URL}/bootstrap-static/"
 ELEMENT_SUMMARY_URL = f"{BASE_URL}/element-summary/{{player_id}}/"
 
+VAASTAV_BASE = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
+VAASTAV_MERGED_GW_URL = f"{VAASTAV_BASE}/{{season}}/gws/merged_gw.csv"
+VAASTAV_TEAMS_URL = f"{VAASTAV_BASE}/{{season}}/teams.csv"
+
+DEFAULT_SEASONS: List[str] = ["2023-24", "2024-25", "2025-26"]
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -65,15 +82,20 @@ USER_AGENT = (
 
 LOGGER = logging.getLogger("fpl.ingest")
 
-# Per-gameweek fields to keep from `history`. Anything missing from a given
-# season's payload is created as NaN rather than raising, so the script keeps
-# working when the FPL API adds/removes stats between seasons.
+# Non-player rows: FPL added "Assistant Manager" (AM) in 2024/25, renamed MNG.
+MANAGER_POSITIONS = {"AM", "MNG", "MAN"}
+
+# Per-gameweek fields kept from the live `history` payload. Anything absent from
+# a given season's response is created as NaN rather than raising, so the script
+# survives the FPL API adding/removing stats between seasons.
 HISTORY_FIELDS: List[str] = [
     "round",                          # gameweek number
     "fixture",
-    "opponent_team",
+    "opponent_team",                  # season-scoped team id (mapped below)
     "was_home",
     "kickoff_time",
+    "team_h_score",
+    "team_a_score",
     "minutes",
     "total_points",
     "goals_scored",
@@ -105,29 +127,43 @@ HISTORY_FIELDS: List[str] = [
     "transfers_balance",
 ]
 
-# Columns coerced to numeric after the merge (the API returns several as strings).
+# vaastav merged_gw.csv -> our schema. Unlisted columns are carried through
+# unchanged if they happen to match, otherwise dropped (and logged at DEBUG).
+VAASTAV_RENAME: Dict[str, str] = {
+    "name": "player_name",
+    "element": "player_id",
+    "xP": "xp",
+    "opponent_team": "opponent_team_id",
+}
+
+# Columns coerced to numeric after the merge (the API/CSV return several as strings).
 NUMERIC_COLS: List[str] = [
-    "round", "minutes", "total_points", "goals_scored", "assists",
+    "gameweek", "minutes", "total_points", "xp", "goals_scored", "assists",
     "clean_sheets", "goals_conceded", "own_goals", "penalties_saved",
     "penalties_missed", "yellow_cards", "red_cards", "saves", "bonus", "bps",
     "influence", "creativity", "threat", "ict_index", "starts",
     "expected_goals", "expected_assists", "expected_goal_involvements",
-    "expected_goals_conceded", "defensive_contribution", "value", "selected",
-    "transfers_in", "transfers_out", "transfers_balance",
+    "expected_goals_conceded", "defensive_contribution", "selected",
+    "transfers_in", "transfers_out", "transfers_balance", "opponent_team_id",
+    "team_h_score", "team_a_score", "now_cost", "gw_cost", "player_id",
 ]
 
-# Final column order for the exported CSV.
+# Canonical output schema, shared by the live and historical paths.
 OUTPUT_COLUMNS: List[str] = [
-    "player_id", "player_name", "web_name", "team", "position",
-    "now_cost", "gw_cost", "gameweek", "kickoff_time", "opponent_team",
-    "was_home", "minutes", "starts", "total_points", "goals_scored",
-    "assists", "clean_sheets", "goals_conceded", "own_goals",
-    "penalties_saved", "penalties_missed", "yellow_cards", "red_cards",
-    "saves", "bonus", "bps", "influence", "creativity", "threat", "ict_index",
+    "season", "player_id", "player_name", "web_name", "team", "position",
+    "now_cost", "gw_cost", "gameweek", "kickoff_time",
+    "opponent_team", "opponent_team_id", "was_home",
+    "team_h_score", "team_a_score", "minutes", "starts",
+    "total_points", "xp", "goals_scored", "assists", "clean_sheets",
+    "goals_conceded", "own_goals", "penalties_saved", "penalties_missed",
+    "yellow_cards", "red_cards", "saves", "bonus", "bps",
+    "influence", "creativity", "threat", "ict_index",
     "expected_goals", "expected_assists", "expected_goal_involvements",
-    "expected_goals_conceded", "defensive_contribution", "selected",
-    "transfers_in", "transfers_out", "transfers_balance",
+    "expected_goals_conceded", "defensive_contribution",
+    "selected", "transfers_in", "transfers_out", "transfers_balance",
 ]
+
+SORT_KEYS = ["season", "gameweek", "team", "player_name"]
 
 
 @dataclass
@@ -135,11 +171,16 @@ class IngestConfig:
     """Runtime knobs for a single ingestion run."""
 
     output_path: Path = Path("fpl_raw_gameweek_data.csv")
+    combined_path: Path = Path("fpl_combined_history.csv")
+    seasons: Sequence[str] = tuple(DEFAULT_SEASONS)
     delay: float = 0.5                 # seconds between element-summary calls
     timeout: int = 20                  # per-request timeout (seconds)
     max_retries: int = 4
     limit: Optional[int] = None        # cap players processed (smoke tests)
     include_unavailable: bool = True   # keep injured/suspended players
+    include_managers: bool = False     # keep AM/MNG rows from the archive
+    skip_live: bool = False
+    skip_historical: bool = False
     cache_dir: Optional[Path] = Path(".fpl_cache")
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -149,7 +190,7 @@ class IngestConfig:
 # --------------------------------------------------------------------------- #
 
 class FPLClient:
-    """Thin, retrying wrapper around the public FPL endpoints."""
+    """Retrying HTTP client for both the FPL API and the GitHub archive."""
 
     def __init__(self, config: IngestConfig) -> None:
         self.config = config
@@ -160,7 +201,7 @@ class FPLClient:
     @staticmethod
     def _build_session(max_retries: int) -> requests.Session:
         session = requests.Session()
-        session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
+        session.headers.update({"User-Agent": USER_AGENT, "Accept": "*/*"})
         retry = Retry(
             total=max_retries,
             backoff_factor=1.0,                       # 1s, 2s, 4s, 8s ...
@@ -174,68 +215,91 @@ class FPLClient:
         return session
 
     # -- caching -------------------------------------------------------------
-    def _cache_path(self, key: str) -> Optional[Path]:
+    def _cache_path(self, key: str, suffix: str) -> Optional[Path]:
         if self.config.cache_dir is None:
             return None
-        return self.config.cache_dir / f"{key}.json"
+        return self.config.cache_dir / f"{key}{suffix}"
 
-    def _read_cache(self, key: str) -> Optional[Dict[str, Any]]:
-        path = self._cache_path(key)
-        if path is None or not path.exists():
-            return None
-        try:
-            with path.open("r", encoding="utf-8") as fh:
-                return json.load(fh)
-        except (json.JSONDecodeError, OSError) as exc:
-            LOGGER.debug("Cache miss for %s (%s)", key, exc)
-            return None
-
-    def _write_cache(self, key: str, payload: Dict[str, Any]) -> None:
-        path = self._cache_path(key)
+    def _write_cache_text(self, key: str, suffix: str, text: str) -> None:
+        path = self._cache_path(key, suffix)
         if path is None:
             return
         try:
-            with path.open("w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
+            path.write_text(text, encoding="utf-8")
         except OSError as exc:
             LOGGER.debug("Could not cache %s (%s)", key, exc)
 
-    # -- requests ------------------------------------------------------------
-    def get_json(self, url: str, cache_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """GET a JSON document. Returns None on any unrecoverable failure."""
-        if cache_key:
-            cached = self._read_cache(cache_key)
-            if cached is not None:
-                LOGGER.debug("Cache hit: %s", cache_key)
-                return cached
+    def _read_cache_text(self, key: str, suffix: str) -> Optional[str]:
+        path = self._cache_path(key, suffix)
+        if path is None or not path.exists():
+            return None
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as exc:
+            LOGGER.debug("Cache read failed for %s (%s)", key, exc)
+            return None
 
+    # -- requests ------------------------------------------------------------
+    def _get(self, url: str) -> Optional[requests.Response]:
         try:
             response = self.session.get(url, timeout=self.config.timeout)
             response.raise_for_status()
-            payload = response.json()
+            return response
         except requests.exceptions.HTTPError as exc:
             LOGGER.warning("HTTP error for %s: %s", url, exc)
-            return None
         except requests.exceptions.Timeout:
             LOGGER.warning("Timed out after %ss: %s", self.config.timeout, url)
-            return None
         except requests.exceptions.RequestException as exc:
             LOGGER.warning("Request failed for %s: %s", url, exc)
+        return None
+
+    def get_json(self, url: str, cache_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """GET a JSON document. Returns None on any unrecoverable failure."""
+        if cache_key:
+            cached = self._read_cache_text(cache_key, ".json")
+            if cached is not None:
+                try:
+                    LOGGER.debug("Cache hit: %s", cache_key)
+                    return json.loads(cached)
+                except json.JSONDecodeError:
+                    LOGGER.debug("Corrupt cache for %s, refetching", cache_key)
+
+        response = self._get(url)
+        if response is None:
             return None
-        except ValueError as exc:  # includes json.JSONDecodeError
+        try:
+            payload = response.json()
+        except ValueError as exc:
             LOGGER.warning("Non-JSON response from %s: %s", url, exc)
             return None
 
         if cache_key:
-            self._write_cache(cache_key, payload)
+            self._write_cache_text(cache_key, ".json", response.text)
         return payload
 
+    def get_text(self, url: str, cache_key: Optional[str] = None) -> Optional[str]:
+        """GET a text document (used for the archive CSVs)."""
+        if cache_key:
+            cached = self._read_cache_text(cache_key, ".csv")
+            if cached is not None:
+                LOGGER.debug("Cache hit: %s", cache_key)
+                return cached
+
+        response = self._get(url)
+        if response is None:
+            return None
+        response.encoding = response.encoding or "utf-8"
+        if cache_key:
+            self._write_cache_text(cache_key, ".csv", response.text)
+        return response.text
+
+    # -- FPL endpoints -------------------------------------------------------
     def fetch_bootstrap(self) -> Dict[str, Any]:
         """Fetch bootstrap-static. Raises if unavailable — nothing works without it."""
         LOGGER.info("Fetching bootstrap-static ...")
         payload = self.get_json(BOOTSTRAP_URL, cache_key="bootstrap_static")
         if not payload:
-            raise RuntimeError("Could not fetch bootstrap-static; aborting ingestion.")
+            raise RuntimeError("Could not fetch bootstrap-static; aborting live ingestion.")
         for key in ("elements", "teams", "element_types"):
             if key not in payload:
                 raise RuntimeError(f"bootstrap-static payload missing '{key}' key.")
@@ -259,13 +323,70 @@ class FPLClient:
 
 
 # --------------------------------------------------------------------------- #
-# Transform layer (pure functions — no network, easy to unit-test)
+# Shared helpers
+# --------------------------------------------------------------------------- #
+
+def normalise_position(value: Any) -> str:
+    """FPL API says 'GKP'; the vaastav archive says 'GK'. Standardise on 'GKP'."""
+    if not isinstance(value, str):
+        return "UNK"
+    token = value.strip().upper()
+    return {"GK": "GKP", "GKP": "GKP", "DEF": "DEF", "MID": "MID", "FWD": "FWD"}.get(
+        token, token or "UNK"
+    )
+
+
+def coerce_numeric(frame: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
+    """The API/CSV return xG/ICT stats as strings — make them numeric for modelling."""
+    for column in columns:
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame
+
+
+def coerce_bool(series: pd.Series) -> pd.Series:
+    """'True'/'true'/1/True -> True, everything falsy -> False, blanks -> NA."""
+    if series.dtype == bool:
+        return series
+    mapped = series.astype(str).str.strip().str.lower().map(
+        {"true": True, "1": True, "1.0": True, "false": False, "0": False, "0.0": False}
+    )
+    return mapped.astype("boolean")
+
+
+def conform_to_schema(frame: pd.DataFrame) -> pd.DataFrame:
+    """Guarantee every OUTPUT_COLUMN exists, in order, dropping stray columns."""
+    for column in OUTPUT_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    dropped = [c for c in frame.columns if c not in OUTPUT_COLUMNS]
+    if dropped:
+        LOGGER.debug("Dropping non-schema columns: %s", ", ".join(sorted(dropped)))
+    return frame[OUTPUT_COLUMNS].copy()   # .copy() -> avoids SettingWithCopyWarning downstream
+
+
+def finalise(frame: pd.DataFrame) -> pd.DataFrame:
+    """Shared post-processing: dtypes, timestamps, ordering."""
+    if frame.empty:
+        return frame
+    frame = coerce_numeric(frame.copy(), NUMERIC_COLS)
+    if "was_home" in frame.columns:
+        frame["was_home"] = coerce_bool(frame["was_home"])
+    if "kickoff_time" in frame.columns:
+        frame["kickoff_time"] = pd.to_datetime(frame["kickoff_time"], errors="coerce", utc=True)
+    if "position" in frame.columns:
+        frame["position"] = frame["position"].map(normalise_position)
+    return frame.sort_values(SORT_KEYS, kind="mergesort").reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------- #
+# Live ingestion — transform layer (pure functions, no network)
 # --------------------------------------------------------------------------- #
 
 def build_team_lookup(teams: Iterable[Dict[str, Any]]) -> Dict[int, Dict[str, str]]:
-    """team_id -> {'name', 'short_name'}"""
+    """team_id -> {'name', 'short_name'}. Season-scoped: ids are reused each year."""
     return {
-        t["id"]: {"name": t.get("name", "Unknown"), "short_name": t.get("short_name", "UNK")}
+        int(t["id"]): {"name": t.get("name", "Unknown"), "short_name": t.get("short_name", "UNK")}
         for t in teams
     }
 
@@ -273,9 +394,24 @@ def build_team_lookup(teams: Iterable[Dict[str, Any]]) -> Dict[int, Dict[str, st
 def build_position_lookup(element_types: Iterable[Dict[str, Any]]) -> Dict[int, str]:
     """element_type id -> 'GKP' / 'DEF' / 'MID' / 'FWD'"""
     return {
-        et["id"]: et.get("singular_name_short") or et.get("singular_name", "UNK")
+        int(et["id"]): normalise_position(
+            et.get("singular_name_short") or et.get("singular_name", "UNK")
+        )
         for et in element_types
     }
+
+
+def derive_season(bootstrap: Dict[str, Any]) -> str:
+    """Infer '2026-27' from the earliest event deadline. Falls back to 'current'."""
+    events = bootstrap.get("events") or []
+    deadlines = [e.get("deadline_time") for e in events if e.get("deadline_time")]
+    if not deadlines:
+        return "current"
+    try:
+        start_year = min(pd.to_datetime(deadlines, utc=True, errors="coerce")).year
+    except (ValueError, TypeError):
+        return "current"
+    return f"{start_year}-{str(start_year + 1)[-2:]}"
 
 
 def build_player_frame(
@@ -293,12 +429,10 @@ def build_player_frame(
                 "player_name": f"{el.get('first_name', '')} {el.get('second_name', '')}".strip(),
                 "web_name": el.get("web_name", ""),
                 "team": team.get("name", "Unknown"),
-                "team_short": team.get("short_name", "UNK"),
                 "position": position_lookup.get(el.get("element_type"), "UNK"),
                 # now_cost is in tenths of a million (55 -> £5.5m)
                 "now_cost": el.get("now_cost", 0) / 10.0,
                 "status": el.get("status", "a"),
-                "season_minutes": el.get("minutes", 0),
             }
         )
     return pd.DataFrame(rows)
@@ -332,40 +466,44 @@ def normalise_history(history: List[Dict[str, Any]], player_id: int) -> pd.DataF
     return frame
 
 
-def coerce_numeric(frame: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
-    """The API returns xG/ICT stats as strings — make them numeric for modelling."""
-    for column in columns:
-        if column in frame.columns:
-            frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    return frame
-
-
-def merge_frames(players: pd.DataFrame, histories: pd.DataFrame) -> pd.DataFrame:
-    """Inner-join per-gameweek rows onto static player metadata and tidy up."""
+def merge_frames(
+    players: pd.DataFrame,
+    histories: pd.DataFrame,
+    team_lookup: Dict[int, Dict[str, str]],
+    season: str,
+) -> pd.DataFrame:
+    """Join per-gameweek rows onto static player metadata and conform to schema."""
     if histories.empty:
         LOGGER.warning("No gameweek history collected — returning empty frame.")
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
     merged = histories.merge(players, on="player_id", how="left", validate="many_to_one")
-    merged = coerce_numeric(merged, NUMERIC_COLS)
+    merged = merged.rename(columns={"round": "gameweek", "opponent_team": "opponent_team_id"})
 
-    merged = merged.rename(columns={"round": "gameweek"})
-    merged["gw_cost"] = merged["value"] / 10.0        # price at that gameweek (£m)
+    merged["season"] = season
+    merged["gw_cost"] = pd.to_numeric(merged["value"], errors="coerce") / 10.0
+    merged["xp"] = pd.NA          # not exposed by element-summary; archive-only
 
-    if "kickoff_time" in merged.columns:
-        merged["kickoff_time"] = pd.to_datetime(merged["kickoff_time"], errors="coerce", utc=True)
+    # Improvement 1: opponent id -> readable short name (season-scoped mapping).
+    merged["opponent_team"] = map_opponent_names(merged["opponent_team_id"], team_lookup)
 
+    # `fixture` is the only safe dedupe key: double gameweeks share a `round`.
     merged = merged.drop_duplicates(subset=["player_id", "fixture"], keep="last")
 
-    ordered = [c for c in OUTPUT_COLUMNS if c in merged.columns]
-    extras = [c for c in merged.columns if c not in ordered and c not in {"value", "fixture", "status", "season_minutes", "team_short"}]
-    merged = merged[ordered + extras]
+    return finalise(conform_to_schema(merged))
 
-    return merged.sort_values(["gameweek", "team", "player_name"]).reset_index(drop=True)
+
+def map_opponent_names(
+    ids: pd.Series, team_lookup: Dict[int, Dict[str, str]], key: str = "short_name"
+) -> pd.Series:
+    """Season-scoped opponent id -> short name ('ARS'), NaN-safe."""
+    mapping = {tid: meta.get(key, "UNK") for tid, meta in team_lookup.items()}
+    numeric = pd.to_numeric(ids, errors="coerce")
+    return numeric.map(mapping).astype("object").where(numeric.notna(), pd.NA)
 
 
 # --------------------------------------------------------------------------- #
-# Orchestration
+# Live ingestion — orchestration
 # --------------------------------------------------------------------------- #
 
 def collect_histories(client: FPLClient, player_ids: List[int], delay: float) -> pd.DataFrame:
@@ -399,25 +537,15 @@ def collect_histories(client: FPLClient, player_ids: List[int], delay: float) ->
     return pd.concat(frames, ignore_index=True)
 
 
-def export_csv(frame: pd.DataFrame, output_path: Path) -> Path:
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        frame.to_csv(output_path, index=False)
-    except OSError as exc:
-        raise RuntimeError(f"Failed to write {output_path}: {exc}") from exc
-    LOGGER.info("Wrote %s (%d rows x %d cols)", output_path, len(frame), frame.shape[1])
-    return output_path
-
-
-def run_ingestion(config: IngestConfig) -> pd.DataFrame:
-    """Full pipeline: bootstrap -> per-player history -> merge -> CSV."""
+def run_live_ingestion(client: FPLClient, config: IngestConfig) -> pd.DataFrame:
+    """bootstrap -> per-player history -> merge -> conform."""
     start = time.perf_counter()
-    client = FPLClient(config)
 
     bootstrap = client.fetch_bootstrap()
     team_lookup = build_team_lookup(bootstrap["teams"])
     position_lookup = build_position_lookup(bootstrap["element_types"])
+    season = derive_season(bootstrap)
+    LOGGER.info("Live season detected: %s", season)
 
     players = build_player_frame(bootstrap["elements"], team_lookup, position_lookup)
     players = select_active_players(players, config.include_unavailable)
@@ -427,24 +555,248 @@ def run_ingestion(config: IngestConfig) -> pd.DataFrame:
         player_ids = player_ids[: config.limit]
         LOGGER.info("Limiting run to first %d players.", config.limit)
 
-    est = len(player_ids) * config.delay
-    LOGGER.info("Fetching gameweek history for %d players (~%.0fs at %.2fs delay) ...",
-                len(player_ids), est, config.delay)
-
-    histories = collect_histories(client, player_ids, config.delay)
-    merged = merge_frames(players, histories)
-
     LOGGER.info(
-        "Done in %.1fs — %d player-gameweek rows, %d unique players, GWs %s-%s",
-        time.perf_counter() - start,
-        len(merged),
-        merged["player_id"].nunique() if not merged.empty else 0,
-        int(merged["gameweek"].min()) if not merged.empty else "-",
-        int(merged["gameweek"].max()) if not merged.empty else "-",
+        "Fetching gameweek history for %d players (~%.0fs at %.2fs delay) ...",
+        len(player_ids), len(player_ids) * config.delay, config.delay,
     )
+    histories = collect_histories(client, player_ids, config.delay)
+    merged = merge_frames(players.drop(columns=["status"]), histories, team_lookup, season)
 
-    export_csv(merged, config.output_path)
+    LOGGER.info("Live ingestion done in %.1fs — %d rows.", time.perf_counter() - start, len(merged))
     return merged
+
+
+# --------------------------------------------------------------------------- #
+# Historical ingestion (vaastav/Fantasy-Premier-League archive)
+# --------------------------------------------------------------------------- #
+
+class HistoricalIngestor:
+    """
+    Downloads and harmonises completed-season `merged_gw.csv` files.
+
+    The archive schema drifts between seasons (e.g. `mng_*` columns appeared in
+    2024/25, `defensive_contribution` in 2025/26), and team ids are re-issued
+    every season, so each season is normalised independently against its own
+    `teams.csv` before concatenation.
+    """
+
+    def __init__(self, client: FPLClient, include_managers: bool = False) -> None:
+        self.client = client
+        self.include_managers = include_managers
+
+    # -- fetch ---------------------------------------------------------------
+    def fetch_team_lookup(self, season: str) -> Dict[int, Dict[str, str]]:
+        """Per-season team id -> names, needed to decode `opponent_team`."""
+        url = VAASTAV_TEAMS_URL.format(season=season)
+        text = self.client.get_text(url, cache_key=f"vaastav_teams_{season}")
+        if not text:
+            LOGGER.warning("[%s] teams.csv unavailable — opponent names will be blank.", season)
+            return {}
+        try:
+            frame = pd.read_csv(io.StringIO(text))
+        except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+            LOGGER.warning("[%s] Could not parse teams.csv: %s", season, exc)
+            return {}
+        if not {"id", "name", "short_name"}.issubset(frame.columns):
+            LOGGER.warning("[%s] teams.csv missing expected columns.", season)
+            return {}
+        return {
+            int(row.id): {"name": str(row.name_), "short_name": str(row.short_name)}
+            for row in frame.rename(columns={"name": "name_"}).itertuples(index=False)
+        }
+
+    def fetch_season_frame(self, season: str) -> Optional[pd.DataFrame]:
+        """Download one season's merged_gw.csv. None if unavailable/unparseable."""
+        url = VAASTAV_MERGED_GW_URL.format(season=season)
+        LOGGER.info("[%s] Downloading merged_gw.csv ...", season)
+        text = self.client.get_text(url, cache_key=f"vaastav_merged_gw_{season}")
+        if not text:
+            LOGGER.warning("[%s] merged_gw.csv unavailable — skipping season.", season)
+            return None
+        try:
+            # encoding_errors guards against the odd mojibake in older files
+            frame = pd.read_csv(io.StringIO(text), low_memory=False)
+        except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+            LOGGER.warning("[%s] Could not parse merged_gw.csv: %s", season, exc)
+            return None
+        LOGGER.info("[%s] %d raw rows, %d columns.", season, len(frame), frame.shape[1])
+        return frame
+
+    # -- transform -----------------------------------------------------------
+    def harmonise(
+        self, frame: pd.DataFrame, season: str, team_lookup: Dict[int, Dict[str, str]]
+    ) -> pd.DataFrame:
+        """Rename, decode ids, and conform a raw archive frame to OUTPUT_COLUMNS."""
+        frame = frame.rename(columns=VAASTAV_RENAME).copy()
+        frame["season"] = season
+
+        # `round` is the API's gameweek; `GW` is the source file's. They diverge
+        # in double gameweeks — prefer `round`, fall back to `GW`.
+        if "round" in frame.columns:
+            frame["gameweek"] = frame["round"]
+            if "GW" in frame.columns:
+                frame["gameweek"] = frame["gameweek"].fillna(frame["GW"])
+        elif "GW" in frame.columns:
+            frame["gameweek"] = frame["GW"]
+        else:
+            LOGGER.warning("[%s] No round/GW column — cannot assign gameweeks.", season)
+            frame["gameweek"] = pd.NA
+
+        # Price at that gameweek (tenths -> £m). `now_cost` stays NaN: today's
+        # price applied to a 2023 row would be lookahead.
+        frame["gw_cost"] = pd.to_numeric(frame.get("value"), errors="coerce") / 10.0
+        frame["now_cost"] = pd.NA
+
+        frame["position"] = frame.get("position", pd.Series("UNK", index=frame.index)).map(
+            normalise_position
+        )
+        if not self.include_managers:
+            managers = frame["position"].isin(MANAGER_POSITIONS)
+            if managers.any():
+                LOGGER.info("[%s] Dropping %d manager rows.", season, int(managers.sum()))
+                frame = frame[~managers]
+
+        if "opponent_team_id" in frame.columns and team_lookup:
+            frame["opponent_team"] = map_opponent_names(frame["opponent_team_id"], team_lookup)
+        else:
+            frame["opponent_team"] = pd.NA
+
+        if "team" not in frame.columns:
+            # Pre-2023 archives omit `team`; recover it from the opponent map is
+            # impossible, so flag loudly rather than silently emitting nulls.
+            LOGGER.warning("[%s] No `team` column in archive — team will be blank.", season)
+            frame["team"] = pd.NA
+
+        if "player_id" not in frame.columns:
+            LOGGER.warning("[%s] No `element` column — player_id will be blank.", season)
+
+        missing = [c for c in OUTPUT_COLUMNS if c not in frame.columns]
+        if missing:
+            LOGGER.info("[%s] Not present in archive (NaN-filled): %s", season, ", ".join(missing))
+
+        conformed = conform_to_schema(frame)
+
+        # Dedupe on fixture where available (double gameweeks share `round`).
+        subset = ["season", "player_id", "gameweek", "kickoff_time"]
+        before = len(conformed)
+        conformed = conformed.drop_duplicates(subset=subset, keep="last")
+        if before != len(conformed):
+            LOGGER.info("[%s] Removed %d duplicate rows.", season, before - len(conformed))
+
+        return conformed
+
+    # -- orchestration -------------------------------------------------------
+    def run(self, seasons: Sequence[str]) -> pd.DataFrame:
+        """Fetch + harmonise every requested season. Missing seasons are skipped."""
+        frames: List[pd.DataFrame] = []
+        for season in seasons:
+            try:
+                raw = self.fetch_season_frame(season)
+                if raw is None or raw.empty:
+                    continue
+                team_lookup = self.fetch_team_lookup(season)
+                harmonised = self.harmonise(raw, season, team_lookup)
+                LOGGER.info(
+                    "[%s] Harmonised: %d rows, %d players, GWs %s-%s",
+                    season, len(harmonised),
+                    harmonised["player_id"].nunique(),
+                    _safe_int(harmonised["gameweek"].min()),
+                    _safe_int(harmonised["gameweek"].max()),
+                )
+                frames.append(harmonised)
+            except Exception as exc:  # one bad season must not kill the run
+                LOGGER.warning("[%s] Unhandled error, skipping season: %s", season, exc)
+
+        if not frames:
+            LOGGER.warning("No historical seasons ingested.")
+            return pd.DataFrame(columns=OUTPUT_COLUMNS)
+
+        combined = pd.concat(frames, ignore_index=True)
+        return finalise(combined)
+
+
+def _safe_int(value: Any) -> Any:
+    try:
+        if pd.isna(value):
+            return "-"
+        return int(value)
+    except (TypeError, ValueError):
+        return "-"
+
+
+# --------------------------------------------------------------------------- #
+# Combination + export
+# --------------------------------------------------------------------------- #
+
+def combine(historical: pd.DataFrame, live: pd.DataFrame) -> pd.DataFrame:
+    """Stack archive + live rows into one frame on the shared schema."""
+    parts = [f for f in (historical, live) if f is not None and not f.empty]
+    if not parts:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+
+    combined = pd.concat([conform_to_schema(p.copy()) for p in parts], ignore_index=True)
+
+    # A season may exist in both sources (archive lags the live API mid-season).
+    # Keep the live row: it is the fresher of the two.
+    before = len(combined)
+    combined = combined.drop_duplicates(
+        subset=["season", "player_id", "gameweek", "kickoff_time"], keep="last"
+    )
+    if before != len(combined):
+        LOGGER.info("Removed %d rows overlapping between archive and live.", before - len(combined))
+
+    return finalise(combined)
+
+
+def export_csv(frame: pd.DataFrame, output_path: Path, label: str = "output") -> Path:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        frame.to_csv(output_path, index=False)
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write {output_path}: {exc}") from exc
+    LOGGER.info("Wrote %s (%s): %d rows x %d cols", output_path, label, len(frame), frame.shape[1])
+    return output_path
+
+
+def summarise(frame: pd.DataFrame) -> None:
+    """Log a per-season row/player/gameweek breakdown — cheap sanity check."""
+    if frame.empty:
+        return
+    summary = (
+        frame.groupby("season")
+        .agg(rows=("player_id", "size"),
+             players=("player_id", "nunique"),
+             gameweeks=("gameweek", "nunique"),
+             total_points=("total_points", "sum"))
+        .reset_index()
+    )
+    LOGGER.info("Per-season summary:\n%s", summary.to_string(index=False))
+
+
+def run_ingestion(config: IngestConfig) -> Dict[str, pd.DataFrame]:
+    """Full pipeline: archive + live -> combined CSV."""
+    start = time.perf_counter()
+    client = FPLClient(config)
+
+    historical = pd.DataFrame(columns=OUTPUT_COLUMNS)
+    if not config.skip_historical:
+        historical = HistoricalIngestor(client, config.include_managers).run(config.seasons)
+
+    live = pd.DataFrame(columns=OUTPUT_COLUMNS)
+    if not config.skip_live:
+        try:
+            live = run_live_ingestion(client, config)
+            export_csv(live, config.output_path, "live season")
+        except RuntimeError as exc:
+            LOGGER.error("Live ingestion failed (%s) — continuing with archive only.", exc)
+
+    combined = combine(historical, live)
+    export_csv(combined, config.combined_path, "combined")
+    summarise(combined)
+    LOGGER.info("Pipeline finished in %.1fs.", time.perf_counter() - start)
+
+    return {"live": live, "historical": historical, "combined": combined}
 
 
 # --------------------------------------------------------------------------- #
@@ -452,18 +804,26 @@ def run_ingestion(config: IngestConfig) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="FPL gameweek data ingestion.")
+    parser = argparse.ArgumentParser(description="FPL gameweek data ingestion (live + archive).")
     parser.add_argument("-o", "--output", default="fpl_raw_gameweek_data.csv",
-                        help="Output CSV path (default: fpl_raw_gameweek_data.csv)")
+                        help="Live-season CSV path (default: fpl_raw_gameweek_data.csv)")
+    parser.add_argument("-c", "--combined-output", default="fpl_combined_history.csv",
+                        help="Combined CSV path (default: fpl_combined_history.csv)")
+    parser.add_argument("-s", "--seasons", nargs="+", default=DEFAULT_SEASONS,
+                        help=f"Archive seasons to ingest (default: {' '.join(DEFAULT_SEASONS)})")
     parser.add_argument("-d", "--delay", type=float, default=0.5,
                         help="Seconds to sleep between player requests (default: 0.5)")
     parser.add_argument("-l", "--limit", type=int, default=None,
-                        help="Only process the first N players (smoke test)")
+                        help="Only process the first N live players (smoke test)")
     parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    parser.add_argument("--skip-live", action="store_true", help="Archive seasons only")
+    parser.add_argument("--skip-historical", action="store_true", help="Live season only")
+    parser.add_argument("--include-managers", action="store_true",
+                        help="Keep AM/MNG (assistant manager) rows from the archive")
     parser.add_argument("--exclude-unavailable", action="store_true",
-                        help="Skip players with status u/n (not in squad / unavailable)")
-    parser.add_argument("--no-cache", action="store_true", help="Disable on-disk JSON caching")
-    parser.add_argument("--cache-dir", default=".fpl_cache", help="Directory for cached JSON")
+                        help="Skip live players with status u/n (not in squad / unavailable)")
+    parser.add_argument("--no-cache", action="store_true", help="Disable on-disk caching")
+    parser.add_argument("--cache-dir", default=".fpl_cache", help="Directory for cached responses")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args(argv)
@@ -477,17 +837,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         datefmt="%H:%M:%S",
     )
 
+    if args.skip_live and args.skip_historical:
+        LOGGER.error("Nothing to do: --skip-live and --skip-historical are both set.")
+        return 2
+
     config = IngestConfig(
         output_path=Path(args.output),
+        combined_path=Path(args.combined_output),
+        seasons=tuple(args.seasons),
         delay=args.delay,
         timeout=args.timeout,
         limit=args.limit,
         include_unavailable=not args.exclude_unavailable,
+        include_managers=args.include_managers,
+        skip_live=args.skip_live,
+        skip_historical=args.skip_historical,
         cache_dir=None if args.no_cache else Path(args.cache_dir),
     )
 
     try:
-        frame = run_ingestion(config)
+        result = run_ingestion(config)
     except RuntimeError as exc:
         LOGGER.error("%s", exc)
         return 1
@@ -495,12 +864,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         LOGGER.error("Interrupted by user.")
         return 130
 
-    if frame.empty:
-        LOGGER.error("Pipeline produced 0 rows — check connectivity or season start date.")
+    combined = result["combined"]
+    if combined.empty:
+        LOGGER.error("Pipeline produced 0 rows — check connectivity and season arguments.")
         return 1
 
-    print("\nPreview:")
-    print(frame.head(10).to_string(index=False))
+    print("\nCombined preview:")
+    preview_cols = ["season", "player_name", "team", "position", "gameweek",
+                    "opponent_team", "was_home", "minutes", "total_points",
+                    "gw_cost", "expected_goals", "expected_assists"]
+    print(combined[preview_cols].head(10).to_string(index=False))
     return 0
 
 
