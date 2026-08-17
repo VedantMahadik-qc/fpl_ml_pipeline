@@ -87,6 +87,12 @@ ROLLING_METRICS: List[str] = [
     "expected_assists",
     "defensive_contribution",
     "clean_sheet_probability",
+    # V2 — difficulty of the fixtures BEHIND the form above. Rolled (and so
+    # shifted) like everything else, which lets the model discount xG piled up
+    # against weak defences.
+    "fdr_opp_defence",
+    "fdr_opp_attack",
+    "fdr_expected_team_goals",
 ]
 
 DEFAULT_WINDOWS: List[int] = [3, 5, 10]
@@ -101,6 +107,48 @@ GROUP_KEY_CHOICES = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# V2 — Fixture Difficulty Rating
+# --------------------------------------------------------------------------- #
+
+# Difficulty of THIS fixture. Known before the deadline, so NOT shifted at the
+# player level (they are already causal — see compute_team_ratings). Phase 3 must
+# add these to PRE_DEADLINE_FEATURES.
+FDR_BASE_FEATURES: List[str] = [
+    "fdr_team_attack",              # team's recent xG generated
+    "fdr_team_defence",             # team's recent xG conceded
+    "fdr_opp_attack",               # opponent's recent xG generated
+    "fdr_opp_defence",              # opponent's recent xG conceded (high = weak defence)
+    "fdr_expected_team_goals",      # Poisson rate: team attack x opponent defence
+    "fdr_expected_team_conceded",   # Poisson rate: opponent attack x team defence
+    "fdr_fixture_cs_prob",          # exp(-expected conceded) — opponent-aware clean sheet
+    "fdr_overall_matchup",          # expected goals - expected conceded
+    "fdr_opp_rating_known",         # 0 for promoted sides with no PL history
+]
+
+# Optional extras when --strength-source includes the FPL native ratings.
+FDR_FPL_FEATURES: List[str] = [
+    "fdr_fpl_opp_defence",
+    "fdr_fpl_opp_attack",
+    "fdr_fpl_opp_tier",
+    "fdr_fpl_matchup",
+]
+
+# Team matches used per rolling rating, and the minimum before a rating counts.
+TEAM_RATING_WINDOW: int = 10
+TEAM_RATING_MIN_PERIODS: int = 3
+
+# Reference scoring rate used to turn two ratings into a Poisson rate. A fixed
+# constant, deliberately: a league mean computed from the data would peek at
+# matches that have not been played yet.
+LEAGUE_MEAN_XG: float = 1.35
+
+VAASTAV_TEAMS_URL = (
+    "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master"
+    "/data/{season}/teams.csv"
+)
+
+
 @dataclass
 class FeatureConfig:
     input_path: Path = Path("fpl_combined_history.csv")
@@ -113,6 +161,11 @@ class FeatureConfig:
     partial_windows: bool = False      # True -> min_periods=1 instead of window
     assist_multiplier: float = FANTASY_ASSIST_MULTIPLIER
     verify: bool = True
+    # --- V2: fixture difficulty ---
+    strength_source: str = "derived"   # derived | fpl | both | none
+    team_rating_window: int = TEAM_RATING_WINDOW
+    strength_csv: Optional[Path] = None
+    fetch_strength: bool = True
     metadata: Dict[str, object] = field(default_factory=dict)
 
 
@@ -237,6 +290,413 @@ def report_absent_metrics(frame: pd.DataFrame, metrics: Iterable[str]) -> None:
                 "will be entirely imputed — consider --median-groups position season.",
                 metric, season, n,
             )
+
+
+# --------------------------------------------------------------------------- #
+# 2b. Fixture Difficulty Rating (V2)
+# --------------------------------------------------------------------------- #
+
+def build_team_name_map(frame: pd.DataFrame) -> Dict[tuple, str]:
+    """
+    (season, short_name) -> full team name.
+
+    Phase 1 stores the player's own club as a full name (`team`) and the
+    opponent as a short code (`opponent_team`) with no link between them, so we
+    have to recover it. A club's own short code is the one code in the season
+    that never appears in its own opponent list — you never play yourself.
+
+    Cleaner long-term fix: have Phase 1 emit `team_id` next to `team`, then this
+    function disappears.
+    """
+    mapping: Dict[tuple, str] = {}
+    for season, block in frame.groupby("season"):
+        shorts = set(block["opponent_team"].dropna().unique())
+        for full_name, team_rows in block.groupby("team"):
+            faced = set(team_rows["opponent_team"].dropna().unique())
+            candidates = shorts - faced
+            if len(candidates) == 1:
+                mapping[(season, candidates.pop())] = full_name
+            else:
+                LOGGER.debug("[%s] Could not resolve short code for %s (%d candidates).",
+                             season, full_name, len(candidates))
+
+    expected = frame.groupby("season")["team"].nunique().sum()
+    LOGGER.info("Resolved %d of %d (season, short_name) -> team mappings.",
+                len(mapping), int(expected))
+    return mapping
+
+
+def build_team_match_table(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Collapse player-gameweeks into one row per team per fixture.
+
+    team_xg   = sum of the players' own expected_goals.
+    team_xgc  = sum(xGC) / (sum(minutes) / 90). FPL charges every player on the
+                pitch the full match xGC, so eleven players x 90 minutes sums to
+                11 x the team figure; dividing by player-matches recovers it and
+                handles substitutions correctly.
+    """
+    required = {"season", "team", "gameweek", "kickoff_time"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise RuntimeError(f"Cannot build team ratings; missing columns: {sorted(missing)}")
+
+    work = frame.copy()
+    for column in ("expected_goals", "expected_goals_conceded", "minutes"):
+        work[column] = pd.to_numeric(work.get(column), errors="coerce")
+    if "team_id" not in work.columns:
+        work["team_id"] = pd.NA
+
+    grouped = work.groupby(["season", "team", "team_id", "gameweek", "kickoff_time"],
+                           dropna=False)
+    table = grouped.agg(
+        team_xg=("expected_goals", "sum"),
+        xgc_sum=("expected_goals_conceded", "sum"),
+        minutes_sum=("minutes", "sum"),
+    ).reset_index()
+
+    player_matches = (table["minutes_sum"] / 90.0).replace(0, np.nan)
+    table["team_xgc"] = table["xgc_sum"] / player_matches
+
+    # Actual goals as a fallback where xG is absent (older archives).
+    if {"team_h_score", "team_a_score", "was_home"}.issubset(work.columns):
+        goals = grouped.agg(
+            home=("was_home", "first"),
+            h=("team_h_score", "first"),
+            a=("team_a_score", "first"),
+        ).reset_index()
+        home_flag = goals["home"].astype("boolean").fillna(False).to_numpy()
+        table["team_goals_for"] = np.where(home_flag, goals["h"], goals["a"])
+        table["team_goals_against"] = np.where(home_flag, goals["a"], goals["h"])
+        table["team_xg"] = table["team_xg"].fillna(pd.to_numeric(table["team_goals_for"],
+                                                                 errors="coerce"))
+        table["team_xgc"] = table["team_xgc"].fillna(pd.to_numeric(table["team_goals_against"],
+                                                                   errors="coerce"))
+
+    table = table.drop(columns=["xgc_sum", "minutes_sum"])
+    LOGGER.info("Team-match table: %d team-fixtures across %d club-seasons.",
+                len(table), table.groupby(["season", "team"]).ngroups)
+    return table
+
+
+def compute_team_ratings(
+    team_matches: pd.DataFrame, window: int = TEAM_RATING_WINDOW
+) -> pd.DataFrame:
+    """
+    Causal rolling attack/defence ratings per team-fixture.
+
+    Two properties that matter:
+
+    * `.shift(1)` before `.rolling(...)`, exactly as at the player level, so a
+      team's rating going into a match reflects only matches already played.
+    * Grouped by TEAM, not by (team, season). A club's rating therefore carries
+      across the summer, so GW1 inherits last season's closing form instead of
+      cold-starting. That is causal — last season really did already happen —
+      and it removes the main reason people reach for a static preseason rating.
+
+    Promoted clubs have no Premier League history, so they get a league-average
+    prior and `rating_known = 0` for the model to key off.
+    """
+    table = team_matches.sort_values(["team", "kickoff_time", "season", "gameweek"],
+                                     kind="mergesort").reset_index(drop=True)
+    grouped = table.groupby("team", sort=False)
+
+    for source, target in (("team_xg", "attack_rating"), ("team_xgc", "defence_rating")):
+        shifted = grouped[source].shift(1)
+        table[target] = (
+            shifted.groupby(table["team"], sort=False)
+            .rolling(window=window, min_periods=TEAM_RATING_MIN_PERIODS)
+            .mean()
+            .reset_index(level=0, drop=True)
+            .sort_index()
+        )
+
+    table["rating_known"] = table[["attack_rating", "defence_rating"]].notna().all(axis=1)
+    unknown = int((~table["rating_known"]).sum())
+    if unknown:
+        LOGGER.info("%d team-fixture(s) have too little history for a rating "
+                    "(season openers / promoted clubs) — using the league prior %.2f.",
+                    unknown, LEAGUE_MEAN_XG)
+
+    table["attack_rating"] = table["attack_rating"].fillna(LEAGUE_MEAN_XG)
+    table["defence_rating"] = table["defence_rating"].fillna(LEAGUE_MEAN_XG)
+    table["rating_known"] = table["rating_known"].astype("int8")
+
+    return table[["season", "team", "team_id", "gameweek", "kickoff_time",
+                  "attack_rating", "defence_rating", "rating_known"]]
+
+
+def latest_team_ratings(
+    team_matches: pd.DataFrame, window: int = TEAM_RATING_WINDOW
+) -> pd.DataFrame:
+    """
+    Each team's rating going into its NEXT, unplayed fixture.
+
+    The forward analogue of `compute_team_ratings`, and the same argument as
+    Phase 5's `compute_forward_form`: the historical ratings are shifted, so a
+    team's value on its last row excludes that very match. For a fixture that
+    has not happened yet we want the window INCLUSIVE of everything played so
+    far, which is simply the tail of the team's match history.
+
+    Grouped by team NAME, so the rating carries across the summer. Team ids are
+    re-issued each season and would break that.
+    """
+    table = team_matches.sort_values(["team", "kickoff_time", "season", "gameweek"],
+                                     kind="mergesort")
+    rows = []
+    for team, group in table.groupby("team", sort=False):
+        attack = group["team_xg"].dropna().tail(window)
+        defence = group["team_xgc"].dropna().tail(window)
+        known = len(attack) >= TEAM_RATING_MIN_PERIODS and len(defence) >= TEAM_RATING_MIN_PERIODS
+        rows.append({
+            "team": team,
+            "attack_rating": float(attack.mean()) if len(attack) else LEAGUE_MEAN_XG,
+            "defence_rating": float(defence.mean()) if len(defence) else LEAGUE_MEAN_XG,
+            "rating_known": int(known),
+            "matches_used": int(min(len(attack), len(defence))),
+        })
+
+    frame = pd.DataFrame(rows)
+    LOGGER.info("Forward team ratings for %d club(s); %d with a full history.",
+                len(frame), int(frame["rating_known"].sum()))
+    return frame
+
+
+def derive_fdr_matchups(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Turn four raw ratings into the Poisson matchup features.
+
+    Shared by Phase 2 (historical rows) and Phase 5 (the upcoming fixture) so
+    the arithmetic cannot drift between train and serve. If this function
+    changes, both sides change together.
+    """
+    frame = frame.copy()
+    for column, default in (("fdr_team_attack", LEAGUE_MEAN_XG),
+                            ("fdr_team_defence", LEAGUE_MEAN_XG),
+                            ("fdr_opp_attack", LEAGUE_MEAN_XG),
+                            ("fdr_opp_defence", LEAGUE_MEAN_XG),
+                            ("fdr_opp_rating_known", 0)):
+        if column not in frame.columns:
+            frame[column] = default
+        frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(default)
+
+    # Multiplicative Poisson rates, the standard Dixon-Coles shape:
+    #   E[goals] = own attack x opponent defence / league reference
+    frame["fdr_expected_team_goals"] = (
+        frame["fdr_team_attack"] * frame["fdr_opp_defence"] / LEAGUE_MEAN_XG)
+    frame["fdr_expected_team_conceded"] = (
+        frame["fdr_opp_attack"] * frame["fdr_team_defence"] / LEAGUE_MEAN_XG)
+
+    # Opponent-aware clean sheet probability. Unlike the player-level
+    # clean_sheet_probability (which is exp(-his own recent xGC) and knows
+    # nothing about who he is facing), this is conditioned on the fixture.
+    frame["fdr_fixture_cs_prob"] = np.exp(-frame["fdr_expected_team_conceded"])
+    frame["fdr_overall_matchup"] = (
+        frame["fdr_expected_team_goals"] - frame["fdr_expected_team_conceded"])
+    return frame
+
+
+def attach_derived_fdr(
+    frame: pd.DataFrame, ratings: pd.DataFrame, name_map: Dict[tuple, str]
+) -> pd.DataFrame:
+    """
+    Join each row's own-team and opponent ratings, then build the matchups.
+
+    Opponent resolution prefers `opponent_team_id` against `team_id` — an exact
+    id-to-id match within the season. It only falls back to the short-code name
+    map for files produced before Phase 1 started emitting `team_id`.
+    """
+    frame = frame.copy()
+
+    own = ratings.rename(columns={"attack_rating": "fdr_team_attack",
+                                  "defence_rating": "fdr_team_defence"})
+    frame = frame.merge(own.drop(columns=["rating_known", "team_id"]),
+                        on=["season", "team", "gameweek", "kickoff_time"],
+                        how="left", validate="many_to_one")
+
+    use_ids = ("team_id" in frame.columns and "opponent_team_id" in frame.columns
+               and frame["team_id"].notna().any() and frame["opponent_team_id"].notna().any())
+
+    opponent = ratings.rename(columns={
+        "attack_rating": "fdr_opp_attack",
+        "defence_rating": "fdr_opp_defence",
+        "rating_known": "fdr_opp_rating_known",
+    })
+
+    if use_ids:
+        LOGGER.info("Resolving opponents by team_id (exact).")
+        frame["_opp_key"] = pd.to_numeric(frame["opponent_team_id"], errors="coerce")
+        opponent = opponent.rename(columns={"team_id": "_opp_key"}).drop(columns=["team"])
+        opponent["_opp_key"] = pd.to_numeric(opponent["_opp_key"], errors="coerce")
+    else:
+        LOGGER.info("No team_id available — resolving opponents by derived short-code map.")
+        frame["_opp_key"] = [
+            name_map.get((season, short))
+            for season, short in zip(frame["season"], frame["opponent_team"])
+        ]
+        opponent = opponent.rename(columns={"team": "_opp_key"}).drop(columns=["team_id"])
+
+    # kickoff_time is in the key so a double gameweek resolves per fixture.
+    frame = frame.merge(opponent, on=["season", "_opp_key", "gameweek", "kickoff_time"],
+                        how="left", validate="many_to_one")
+
+    unresolved = int(frame["fdr_opp_attack"].isna().sum())
+    if unresolved:
+        LOGGER.warning("%d row(s) could not be matched to an opponent rating — "
+                       "falling back to the league prior.", unresolved)
+
+    frame = derive_fdr_matchups(frame).drop(columns=["_opp_key"])
+    LOGGER.info("Derived FDR attached: expected goals %.2f-%.2f, fixture CS prob %.2f-%.2f.",
+                frame["fdr_expected_team_goals"].min(), frame["fdr_expected_team_goals"].max(),
+                frame["fdr_fixture_cs_prob"].min(), frame["fdr_fixture_cs_prob"].max())
+    return frame
+
+
+# -- optional: FPL's own published strength ratings -------------------------- #
+
+def load_fpl_strength_table(
+    seasons: Iterable[str], config: FeatureConfig
+) -> Optional[pd.DataFrame]:
+    """
+    Load FPL's published `strength_*` fields, from CSV or the archive.
+
+    Read the warning in `attach_fpl_strength` before using these in training.
+    """
+    if config.strength_csv and Path(config.strength_csv).exists():
+        table = pd.read_csv(config.strength_csv)
+        LOGGER.info("Loaded FPL strength table from %s (%d rows).",
+                    config.strength_csv, len(table))
+        return table
+
+    if not config.fetch_strength:
+        LOGGER.warning("No strength CSV and --no-fetch-strength set — skipping FPL ratings.")
+        return None
+
+    try:
+        from fpl_ingest import FPLClient, IngestConfig
+    except ImportError:
+        LOGGER.warning("fpl_ingest not importable — cannot fetch FPL strength ratings.")
+        return None
+
+    client = FPLClient(IngestConfig(cache_dir=Path(".fpl_cache")))
+    frames = []
+    for season in seasons:
+        text = client.get_text(VAASTAV_TEAMS_URL.format(season=season),
+                               cache_key=f"vaastav_teams_{season}")
+        if not text:
+            LOGGER.warning("[%s] teams.csv unavailable — no FPL strength for this season.",
+                           season)
+            continue
+        import io
+        block = pd.read_csv(io.StringIO(text))
+        block["season"] = season
+        frames.append(block)
+
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)
+
+
+def attach_fpl_strength(
+    frame: pd.DataFrame, table: Optional[pd.DataFrame], name_map: Dict[tuple, str]
+) -> pd.DataFrame:
+    """
+    Join FPL's own strength ratings, z-scored within season.
+
+    WARNING — READ THIS BEFORE TRAINING ON THESE COLUMNS
+    ----------------------------------------------------
+    The archive's `teams.csv` is an END-OF-SEASON snapshot, not a preseason one.
+    Nott'm Forest are rated 3 in the 2023-24 file and upgraded to 4 in the
+    2024-25 file, after finishing 17th; Man Utd move the other way, matching
+    their 15th-place finish. The ratings encode how each season turned out, so
+    using them on a GW1 row leaks that season's outcome.
+
+    They are fine at LIVE inference (bootstrap-static returns a current value)
+    and fine for the season currently in progress. They are not fine as training
+    features on completed seasons, which is why --strength-source defaults to
+    `derived`. Absolute values also drift year to year (Arsenal 1350 in 2023-24
+    vs 1300 in 2025-26), so everything is z-scored within season.
+    """
+    frame = frame.copy()
+    if table is None or table.empty:
+        for column in FDR_FPL_FEATURES:
+            frame[column] = np.nan
+        return frame
+
+    LOGGER.warning(
+        "Attaching FPL native strength ratings. The archive teams.csv is an "
+        "end-of-season snapshot — these leak on completed seasons. See the "
+        "docstring of attach_fpl_strength()."
+    )
+
+    strength_columns = ["strength_attack_home", "strength_attack_away",
+                        "strength_defence_home", "strength_defence_away"]
+    available = [c for c in strength_columns if c in table.columns]
+    if not available or "short_name" not in table.columns:
+        LOGGER.warning("Strength table lacks the expected columns — skipping.")
+        for column in FDR_FPL_FEATURES:
+            frame[column] = np.nan
+        return frame
+
+    # Z-score within season: raw values are not comparable across years.
+    table = table.copy()
+    for column in available:
+        values = pd.to_numeric(table[column], errors="coerce")
+        table[f"z_{column}"] = values.groupby(table["season"]).transform(
+            lambda s: (s - s.mean()) / (s.std(ddof=0) or 1.0))
+
+    lookup = table.set_index(["season", "short_name"])
+    was_home = frame["was_home"].astype("boolean").fillna(False).to_numpy()
+
+    def pull(column: str) -> np.ndarray:
+        index = pd.MultiIndex.from_arrays([frame["season"], frame["opponent_team"]])
+        return lookup[column].reindex(index).to_numpy()
+
+    # The opponent's venue is the mirror of ours.
+    frame["fdr_fpl_opp_defence"] = np.where(
+        was_home, pull("z_strength_defence_away"), pull("z_strength_defence_home"))
+    frame["fdr_fpl_opp_attack"] = np.where(
+        was_home, pull("z_strength_attack_away"), pull("z_strength_attack_home"))
+    frame["fdr_fpl_opp_tier"] = pull("strength") if "strength" in lookup.columns else np.nan
+    frame["fdr_fpl_matchup"] = frame["fdr_fpl_opp_attack"] - frame["fdr_fpl_opp_defence"]
+
+    filled = int(frame["fdr_fpl_opp_defence"].notna().sum())
+    LOGGER.info("FPL strength attached to %d of %d rows.", filled, len(frame))
+    return frame
+
+
+def add_fixture_difficulty(frame: pd.DataFrame, config: FeatureConfig) -> pd.DataFrame:
+    """Entry point for the whole FDR block."""
+    if config.strength_source == "none":
+        LOGGER.info("Fixture difficulty disabled (--strength-source none).")
+        for column in FDR_BASE_FEATURES + FDR_FPL_FEATURES:
+            frame[column] = np.nan
+        return frame
+
+    if "opponent_team" not in frame.columns:
+        LOGGER.warning("No `opponent_team` column — cannot build fixture difficulty.")
+        for column in FDR_BASE_FEATURES + FDR_FPL_FEATURES:
+            frame[column] = np.nan
+        return frame
+
+    name_map = build_team_name_map(frame)
+
+    if config.strength_source in ("derived", "both"):
+        team_matches = build_team_match_table(frame)
+        ratings = compute_team_ratings(team_matches, config.team_rating_window)
+        frame = attach_derived_fdr(frame, ratings, name_map)
+    else:
+        for column in FDR_BASE_FEATURES:
+            frame[column] = np.nan
+
+    if config.strength_source in ("fpl", "both"):
+        seasons = sorted(frame["season"].dropna().unique())
+        frame = attach_fpl_strength(frame, load_fpl_strength_table(seasons, config), name_map)
+    else:
+        for column in FDR_FPL_FEATURES:
+            frame[column] = np.nan
+
+    return frame
 
 
 # --------------------------------------------------------------------------- #
@@ -546,6 +1006,11 @@ def build_features(config: FeatureConfig) -> pd.DataFrame:
 
     # 2. Benchwarmers adjustments on raw rows, pre-rolling.
     frame = apply_benchwarmer_adjustments(frame, config.assist_multiplier)
+
+    # 2b. Fixture difficulty. Must precede the rolling step so that the FDR
+    #     metrics in ROLLING_METRICS exist by the time windows are built.
+    frame = add_fixture_difficulty(frame, config)
+
     frame = flag_observed_metrics(frame, config.metrics)
     report_absent_metrics(frame, config.metrics)
 
@@ -614,6 +1079,17 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--assist-multiplier", type=float, default=FANTASY_ASSIST_MULTIPLIER)
     parser.add_argument("--partial-windows", action="store_true",
                         help="min_periods=1 instead of the full window")
+    parser.add_argument("--strength-source", default="derived",
+                        choices=["derived", "fpl", "both", "none"],
+                        help="Fixture difficulty source. `derived` (default) builds causal "
+                             "team ratings from our own xG data; `fpl` uses the published "
+                             "strength_* fields, which LEAK on completed seasons")
+    parser.add_argument("--team-rating-window", type=int, default=TEAM_RATING_WINDOW,
+                        help=f"Team matches per rolling rating (default: {TEAM_RATING_WINDOW})")
+    parser.add_argument("--strength-csv", default=None,
+                        help="Pre-fetched FPL strength table (season,short_name,strength_*)")
+    parser.add_argument("--no-fetch-strength", action="store_true",
+                        help="Never hit the network for the FPL strength table")
     parser.add_argument("--no-verify", action="store_true", help="Skip the leakage assertion")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -639,6 +1115,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         partial_windows=args.partial_windows,
         assist_multiplier=args.assist_multiplier,
         verify=not args.no_verify,
+        strength_source=args.strength_source,
+        team_rating_window=args.team_rating_window,
+        strength_csv=Path(args.strength_csv) if args.strength_csv else None,
+        fetch_strength=not args.no_fetch_strength,
     )
 
     try:

@@ -117,6 +117,8 @@ class LiveConfig:
     bench_weight: float = 0.0
     reuse_last_row: bool = False
     partial_windows: bool = False
+    fdr: bool = True                      # build forward fixture-difficulty features
+    team_rating_window: int = 10          # team matches per rating; matches Phase 2
     exclude: Sequence[str] = ()
     cache_dir: Optional[Path] = None      # None -> always hit the live API
     output_path: Optional[Path] = None
@@ -313,6 +315,81 @@ def build_fixture_rows(
 # --------------------------------------------------------------------------- #
 # 3. Forward rolling features
 # --------------------------------------------------------------------------- #
+
+def build_forward_fdr(
+    fixture_rows: pd.DataFrame, history: pd.DataFrame, window: int
+) -> pd.DataFrame:
+    """
+    Fixture-difficulty features for the UPCOMING gameweek.
+
+    Mirrors Phase 2 exactly, with one deliberate difference: it uses
+    `latest_team_ratings()` rather than `compute_team_ratings()`. The historical
+    ratings are shifted so a team's value on its last row excludes that match;
+    for a fixture that has not been played we want the window inclusive of
+    everything so far. Same argument as recomputing player form forward.
+
+    The matchup arithmetic itself comes from the shared
+    `fpl_features.derive_fdr_matchups()`, so train and serve cannot drift.
+
+    Teams are joined by NAME, not id: FPL element and team ids are re-issued
+    every season, but the club name is stable, and the rating window reaches
+    back across the summer.
+    """
+    try:
+        from fpl_features import (
+            LEAGUE_MEAN_XG,
+            build_team_match_table,
+            derive_fdr_matchups,
+            latest_team_ratings,
+        )
+    except ImportError as exc:
+        raise RuntimeError("fpl_features.py must be importable to build FDR.") from exc
+
+    frame = fixture_rows.copy()
+
+    team_matches = build_team_match_table(history)
+    ratings = latest_team_ratings(team_matches, window).set_index("team")
+
+    def rating(names: pd.Series, column: str, default: float) -> np.ndarray:
+        return names.map(ratings[column]).fillna(default).to_numpy()
+
+    frame["fdr_team_attack"] = rating(frame["team"], "attack_rating", LEAGUE_MEAN_XG)
+    frame["fdr_team_defence"] = rating(frame["team"], "defence_rating", LEAGUE_MEAN_XG)
+    frame["fdr_opp_attack"] = rating(frame["opponent_name"], "attack_rating", LEAGUE_MEAN_XG)
+    frame["fdr_opp_defence"] = rating(frame["opponent_name"], "defence_rating", LEAGUE_MEAN_XG)
+    frame["fdr_opp_rating_known"] = rating(frame["opponent_name"], "rating_known", 0).astype(int)
+
+    unknown = frame["opponent_name"].map(ratings["attack_rating"]).isna()
+    if unknown.any():
+        missing = sorted(frame.loc[unknown, "opponent_name"].unique())
+        LOGGER.warning(
+            "%d row(s) face a club with no history in the feature file (promoted sides?): "
+            "%s — using the league prior %.2f.",
+            int(unknown.sum()), ", ".join(map(str, missing[:6])), LEAGUE_MEAN_XG,
+        )
+
+    frame = derive_fdr_matchups(frame)
+    LOGGER.info(
+        "Forward FDR built: expected goals %.2f-%.2f, fixture clean-sheet prob %.2f-%.2f.",
+        frame["fdr_expected_team_goals"].min(), frame["fdr_expected_team_goals"].max(),
+        frame["fdr_fixture_cs_prob"].min(), frame["fdr_fixture_cs_prob"].max(),
+    )
+    return frame
+
+
+def report_fixture_swings(frame: pd.DataFrame, top_n: int = 3) -> None:
+    """Log the kindest and cruellest fixtures — a quick sanity check on the ratings."""
+    if "fdr_overall_matchup" not in frame.columns:
+        return
+    by_team = (frame.groupby(["team", "opponent_team"])["fdr_overall_matchup"]
+               .mean().sort_values(ascending=False))
+    if by_team.empty:
+        return
+    best = [f"{t} v {o} ({v:+.2f})" for (t, o), v in by_team.head(top_n).items()]
+    worst = [f"{t} v {o} ({v:+.2f})" for (t, o), v in by_team.tail(top_n).items()]
+    LOGGER.info("Best fixtures: %s", "; ".join(best))
+    LOGGER.info("Worst fixtures: %s", "; ".join(worst))
+
 
 def normalise_name(value: Any) -> str:
     """Accent- and case-insensitive key for joining live players to history."""
@@ -550,9 +627,16 @@ def assemble_feature_matrix(
     needed: Dict[str, List[int]],
     config: LiveConfig,
 ) -> pd.DataFrame:
-    """Join live fixture context to recomputed form, then fill any gaps."""
+    """Join live fixture context to recomputed form and forward FDR, then fill gaps."""
     fixture_rows = fixture_rows.copy()
     fixture_rows["_name_key"] = fixture_rows["player_name"].map(normalise_name)
+
+    # V2: difficulty of the upcoming fixture, from team ratings through GW N.
+    if config.fdr:
+        fixture_rows = build_forward_fdr(fixture_rows, history, config.team_rating_window)
+        report_fixture_swings(fixture_rows)
+    else:
+        LOGGER.warning("Fixture difficulty disabled — models trained with fdr_* will see NaN.")
 
     form = reuse_last_row_form(history, needed) if config.reuse_last_row \
         else compute_forward_form(history, needed, config.partial_windows)
@@ -773,6 +857,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Copy the last row's rolling features instead of recomputing")
     parser.add_argument("--partial-windows", action="store_true",
                         help="Allow windows shorter than w instead of imputing")
+    parser.add_argument("--no-fdr", action="store_true",
+                        help="Skip forward fixture-difficulty features")
+    parser.add_argument("--team-rating-window", type=int, default=10,
+                        help="Team matches per rating (must match Phase 2)")
     parser.add_argument("--exclude", default="", help="Comma-separated names to exclude")
     parser.add_argument("--cache-dir", default=None,
                         help="Cache API responses here (default: always live)")
@@ -801,6 +889,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         bench_weight=args.bench_weight,
         reuse_last_row=args.reuse_last_row,
         partial_windows=args.partial_windows,
+        fdr=not args.no_fdr,
+        team_rating_window=args.team_rating_window,
         exclude=[n for n in args.exclude.split(",") if n.strip()],
         cache_dir=Path(args.cache_dir) if args.cache_dir else None,
         output_path=Path(args.output) if args.output else None,

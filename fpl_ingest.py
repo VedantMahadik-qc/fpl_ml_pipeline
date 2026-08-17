@@ -145,12 +145,12 @@ NUMERIC_COLS: List[str] = [
     "expected_goals", "expected_assists", "expected_goal_involvements",
     "expected_goals_conceded", "defensive_contribution", "selected",
     "transfers_in", "transfers_out", "transfers_balance", "opponent_team_id",
-    "team_h_score", "team_a_score", "now_cost", "gw_cost", "player_id",
+    "team_h_score", "team_a_score", "now_cost", "gw_cost", "player_id", "team_id",
 ]
 
 # Canonical output schema, shared by the live and historical paths.
 OUTPUT_COLUMNS: List[str] = [
-    "season", "player_id", "player_name", "web_name", "team", "position",
+    "season", "player_id", "player_name", "web_name", "team", "team_id", "position",
     "now_cost", "gw_cost", "gameweek", "kickoff_time",
     "opponent_team", "opponent_team_id", "was_home",
     "team_h_score", "team_a_score", "minutes", "starts",
@@ -429,6 +429,9 @@ def build_player_frame(
                 "player_name": f"{el.get('first_name', '')} {el.get('second_name', '')}".strip(),
                 "web_name": el.get("web_name", ""),
                 "team": team.get("name", "Unknown"),
+                # Season-scoped, like every other FPL id — but it makes the
+                # opponent join in Phase 2 exact instead of name-matched.
+                "team_id": el.get("team"),
                 "position": position_lookup.get(el.get("element_type"), "UNK"),
                 # now_cost is in tenths of a million (55 -> £5.5m)
                 "now_cost": el.get("now_cost", 0) / 10.0,
@@ -666,6 +669,18 @@ class HistoricalIngestor:
             # impossible, so flag loudly rather than silently emitting nulls.
             LOGGER.warning("[%s] No `team` column in archive — team will be blank.", season)
             frame["team"] = pd.NA
+            frame["team_id"] = pd.NA
+        else:
+            # The archive gives the player's club as a name and the opponent as
+            # an id. Resolve the name back to that season's id so downstream
+            # joins (notably Phase 2's fixture-difficulty step) can match a team
+            # to its opponent exactly rather than by string.
+            name_to_id = {meta["name"]: tid for tid, meta in team_lookup.items()}
+            frame["team_id"] = frame["team"].map(name_to_id)
+            unresolved = frame["team_id"].isna().sum()
+            if unresolved:
+                LOGGER.warning("[%s] %d row(s) have a team name absent from teams.csv.",
+                               season, int(unresolved))
 
         if "player_id" not in frame.columns:
             LOGGER.warning("[%s] No `element` column — player_id will be blank.", season)

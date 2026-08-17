@@ -95,6 +95,13 @@ ROLLING_PATTERN = re.compile(r"_roll_\d+$")
 # Known before the deadline, so legal as features.
 PRE_DEADLINE_FEATURES: List[str] = ["gw_cost", "was_home", "games_prior", "is_cold_start"]
 
+# V2 — fixture difficulty. The base `fdr_*` columns describe the UPCOMING
+# opponent and are already causal at the team level (Phase 2 shifts the team
+# ratings), so they are pre-deadline knowns rather than rolling features. Picked
+# up by prefix so new FDR columns are included automatically; the `*_roll_<n>`
+# variants are caught separately by the rolling allowlist.
+FDR_PREFIX: str = "fdr_"
+
 # Only knowable after the fixture is played. Never features.
 POST_MATCH_COLUMNS: set = {
     "total_points", "minutes", "starts", "goals_scored", "assists", "clean_sheets",
@@ -160,7 +167,7 @@ def add_position_indicators(frame: pd.DataFrame) -> Tuple[pd.DataFrame, List[str
 
 
 def select_feature_columns(frame: pd.DataFrame, position_columns: Sequence[str]) -> List[str]:
-    """Allowlist: rolling features + pre-deadline knowns + position indicators."""
+    """Allowlist: rolling features + pre-deadline knowns + FDR + position indicators."""
     rolling = sorted(c for c in frame.columns if ROLLING_PATTERN.search(c))
     if not rolling:
         raise RuntimeError("No `*_roll_<n>` columns found — is this the Phase 2 output?")
@@ -169,9 +176,23 @@ def select_feature_columns(frame: pd.DataFrame, position_columns: Sequence[str])
     for absent in set(PRE_DEADLINE_FEATURES) - set(pre_deadline):
         LOGGER.warning("Pre-deadline feature `%s` not in data — skipping.", absent)
 
-    features = rolling + pre_deadline + list(position_columns)
-    LOGGER.info("Feature matrix: %d columns (%d rolling, %d pre-deadline, %d position).",
-                len(features), len(rolling), len(pre_deadline), len(position_columns))
+    # Base fixture-difficulty columns: `fdr_*` that are neither rolling variants
+    # (already captured above) nor the `*_observed` availability flags.
+    fdr = sorted(
+        c for c in frame.columns
+        if c.startswith(FDR_PREFIX)
+        and not ROLLING_PATTERN.search(c)
+        and not c.endswith("_observed")
+        and frame[c].notna().any()
+    )
+    if fdr:
+        LOGGER.info("Fixture-difficulty features found: %s", ", ".join(fdr))
+    else:
+        LOGGER.warning("No `fdr_*` columns — run Phase 2 with --strength-source derived.")
+
+    features = rolling + pre_deadline + fdr + list(position_columns)
+    LOGGER.info("Feature matrix: %d columns (%d rolling, %d pre-deadline, %d FDR, %d position).",
+                len(features), len(rolling), len(pre_deadline), len(fdr), len(position_columns))
     return features
 
 
