@@ -1,6 +1,112 @@
-venv/
-.fpl_cache/
+# ---------------------------------------------------------------------------
+# FPL Machine Learning Pipeline
+# ---------------------------------------------------------------------------
+# Everything the pipeline produces is regenerable from the two scripts that
+# make it, so none of it belongs in version control. Keeping ~90k-row CSVs and
+# multi-hundred-KB .joblib blobs out of git also keeps clones fast and diffs
+# readable.
+
+# --- generated data (Phase 1 & 2 output) ---
+fpl_combined_history.csv
+fpl_raw_gameweek_data.csv
+fpl_ml_features.csv
+fpl_position_medians.json
+
+# Catch-all for data files at any depth, with an escape hatch for the small
+# fixtures a test suite would legitimately commit.
 *.csv
-__pycache__/
+*.parquet
+*.feather
+!tests/fixtures/*.csv
+!tests/data/*.csv
+
+# --- API response cache (Phase 1 & 5) ---
+.fpl_cache/
+
+# --- trained models and reports (Phase 3 output) ---
 models/
-*.json
+!models/.gitkeep
+
+# --- solver output (Phase 4 & 5) ---
+squad.csv
+live_squad.csv
+*.lp
+*.mps
+*-pulp.sol
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib60/
+parts/
+sdist/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- virtual environments ---
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# --- testing / coverage ---
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# --- type checkers and linters ---
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# ---------------------------------------------------------------------------
+# Notebooks
+# ---------------------------------------------------------------------------
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# ---------------------------------------------------------------------------
+# Editors and OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------------------
+# Secrets — no key should ever reach this repo
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+secrets.json
