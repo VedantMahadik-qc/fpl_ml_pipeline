@@ -65,6 +65,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+# `load_models` below unpickles the combined `fpl_model_{POS}.joblib` bundles,
+# which hold a TwoStageModel. Importing it here makes the class resolvable —
+# including for bundles written by an older fpl_train.py that recorded it as
+# `__main__.TwoStageModel`. Keep the import even though the symbol looks unused.
+from fpl_models import TwoStageModel  # noqa: F401
+
 try:
     import joblib
 except ImportError as exc:  # pragma: no cover

@@ -64,8 +64,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import joblib
 import numpy as np
 import pandas as pd
+
+# Importing this registers the pickle alias that lets model bundles written by
+# an older fpl_train.py (which recorded `__main__.TwoStageModel`) load from any
+# entry point. Keep the import even though the symbol looks unused.
+from fpl_models import TwoStageModel  # noqa: F401
 
 # Phase 1 — HTTP client with retries/caching, and the bootstrap decoders.
 from fpl_ingest import (
@@ -317,7 +323,8 @@ def build_fixture_rows(
 # --------------------------------------------------------------------------- #
 
 def build_forward_fdr(
-    fixture_rows: pd.DataFrame, history: pd.DataFrame, window: int
+    fixture_rows: pd.DataFrame, history: pd.DataFrame, window: int,
+    ratings: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
     Fixture-difficulty features for the UPCOMING gameweek.
@@ -334,6 +341,11 @@ def build_forward_fdr(
     Teams are joined by NAME, not id: FPL element and team ids are re-issued
     every season, but the club name is stable, and the rating window reaches
     back across the summer.
+
+    `ratings` may be supplied precomputed. A multi-gameweek caller (the V3
+    transfer solver) builds them once and reuses them across the horizon —
+    ratings are frozen going forward anyway, so recomputing per gameweek would
+    be identical work for an identical answer.
     """
     try:
         from fpl_features import (
@@ -347,8 +359,10 @@ def build_forward_fdr(
 
     frame = fixture_rows.copy()
 
-    team_matches = build_team_match_table(history)
-    ratings = latest_team_ratings(team_matches, window).set_index("team")
+    if ratings is None:
+        ratings = latest_team_ratings(build_team_match_table(history), window)
+    if "team" in ratings.columns:
+        ratings = ratings.set_index("team")
 
     def rating(names: pd.Series, column: str, default: float) -> np.ndarray:
         return names.map(ratings[column]).fillna(default).to_numpy()
@@ -626,6 +640,7 @@ def assemble_feature_matrix(
     history: pd.DataFrame,
     needed: Dict[str, List[int]],
     config: LiveConfig,
+    ratings: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Join live fixture context to recomputed form and forward FDR, then fill gaps."""
     fixture_rows = fixture_rows.copy()
@@ -633,8 +648,11 @@ def assemble_feature_matrix(
 
     # V2: difficulty of the upcoming fixture, from team ratings through GW N.
     if config.fdr:
-        fixture_rows = build_forward_fdr(fixture_rows, history, config.team_rating_window)
+        fixture_rows = build_forward_fdr(fixture_rows, history,
+                                         config.team_rating_window, ratings)
         report_fixture_swings(fixture_rows)
+    elif any(c.startswith("fdr_") for c in fixture_rows.columns):
+        LOGGER.debug("Fixture difficulty already attached by the caller.")
     else:
         LOGGER.warning("Fixture difficulty disabled — models trained with fdr_* will see NaN.")
 
@@ -666,27 +684,154 @@ def assemble_feature_matrix(
     return merged
 
 
+def load_two_stage_models(
+    model_dir: Path,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
+    """
+    Load the V4 two-stage models: `fpl_model_{POS}_prob` + `fpl_model_{POS}_pts`.
+
+    Returns `(bundles, metadata)`, matching `fpl_optimizer.load_models` so it is
+    a drop-in replacement at every call site.
+
+    Prefers the split files because they contain plain XGBoost estimators, whose
+    classes live in an installed package and therefore unpickle from any entry
+    point. The combined `fpl_model_{POS}.joblib` wrapper is only a fallback: it
+    holds a `TwoStageModel`, and older ones were pickled from `__main__`. The
+    `fpl_models` import at the top of this file registers the alias that makes
+    those loadable anyway.
+    """
+    model_dir = Path(model_dir)
+    if not model_dir.exists():
+        raise FileNotFoundError(f"{model_dir} not found. Run fpl_train.py (Phase 3) first.")
+
+    bundles: Dict[str, Dict[str, Any]] = {}
+    for position in POSITIONS:
+        prob_path = model_dir / f"fpl_model_{position}_prob.joblib"
+        pts_path = model_dir / f"fpl_model_{position}_pts.joblib"
+
+        if prob_path.exists() and pts_path.exists():
+            try:
+                prob_bundle, pts_bundle = joblib.load(prob_path), joblib.load(pts_path)
+            except Exception as exc:
+                LOGGER.warning("Could not load two-stage models for %s: %s", position, exc)
+                continue
+            if prob_bundle["features"] != pts_bundle["features"]:
+                LOGGER.warning("%s: the two stages were trained on different feature sets; "
+                               "using the classifier's.", position)
+            bundles[position] = {
+                "position": position, "stage": "two_stage",
+                "classifier": prob_bundle["model"], "regressor": pts_bundle["model"],
+                "features": prob_bundle["features"],
+            }
+            continue
+
+        combined = model_dir / f"fpl_model_{position}.joblib"
+        if combined.exists():
+            try:
+                bundle = joblib.load(combined)
+            except Exception as exc:
+                LOGGER.warning("Could not load %s: %s", combined, exc)
+                continue
+            bundles[position] = bundle
+            LOGGER.debug("%s: using the combined bundle (%s).",
+                         position, bundle.get("stage", "single"))
+        else:
+            LOGGER.warning("No model for %s — those players will be skipped.", position)
+
+    if not bundles:
+        raise RuntimeError(f"No position models could be loaded from {model_dir}/.")
+
+    layouts = {b.get("stage", "single") for b in bundles.values()}
+    LOGGER.info("Loaded %d position model(s): %s [%s]",
+                len(bundles), ", ".join(sorted(bundles)), ", ".join(sorted(layouts)))
+
+    metadata: Dict[str, Any] = {}
+    metadata_path = model_dir / "feature_metadata.joblib"
+    if metadata_path.exists():
+        try:
+            metadata = joblib.load(metadata_path)
+        except Exception as exc:
+            LOGGER.warning("Could not load feature metadata: %s", exc)
+
+    return bundles, metadata
+
+
+def _predict_stages(bundle: Dict[str, Any], matrix: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Return (P(plays), E[points | plays]) for whichever model layout we were given.
+
+    Three shapes are supported so a model directory from any version still runs:
+      * separate classifier + regressor objects  (V4, loaded from _prob/_pts)
+      * a TwoStageModel wrapper with predict_parts (V4 combined bundle)
+      * a single regressor                        (V3) -> probability is 1.0,
+        which makes the product collapse to the old behaviour exactly
+    """
+    if "classifier" in bundle and "regressor" in bundle:
+        prob = bundle["classifier"].predict_proba(matrix)[:, 1]
+        conditional = bundle["regressor"].predict(matrix)
+        return prob, conditional
+
+    model = bundle["model"]
+    if hasattr(model, "predict_parts"):
+        return model.predict_parts(matrix)
+
+    # Single-stage fallback: E[points] is already marginal, so P(plays) = 1.
+    return np.ones(len(matrix)), model.predict(matrix)
+
+
 def predict_points(frame: pd.DataFrame, bundles: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
-    """Score each position with its own Phase 3 model."""
+    """
+    Score each position with its own two-stage model.
+
+        predicted_points = P(plays) x E[points | plays]
+
+    This is exact rather than an approximation: a non-appearance scores exactly
+    zero in FPL, so the E[pts | not play] term of the total-expectation identity
+    vanishes.
+
+    Both components are kept as columns. `prob_play` is the single most useful
+    number for a human sanity-check before a deadline — a 12-point projection
+    behind a 0.35 start probability is a very different proposition from the
+    same projection behind 0.95, and the product alone hides that.
+    """
     frame = frame.copy()
     for position in POSITIONS:
         frame[f"pos_{position}"] = (frame["position"] == position).astype("int8")
-    frame["predicted_points"] = np.nan
+    for column in ("predicted_points", "prob_play", "points_if_plays"):
+        frame[column] = np.nan
 
     for position, bundle in bundles.items():
         mask = frame["position"] == position
         if not mask.any():
             continue
+
         matrix = prepare_matrix(frame.loc[mask], bundle["features"])
         try:
-            predictions = bundle["model"].predict(matrix)
+            prob, conditional = _predict_stages(bundle, matrix)
         except Exception as exc:
             LOGGER.warning("Prediction failed for %s: %s", position, exc)
             continue
-        frame.loc[mask, "predicted_points"] = np.clip(predictions, 0.0, None)
-        LOGGER.info("  %s: %d rows scored (mean %.2f, max %.2f)",
-                    position, int(mask.sum()),
-                    float(np.mean(predictions)), float(np.max(predictions)))
+
+        prob = np.clip(prob, 0.0, 1.0)
+        conditional = np.clip(conditional, 0.0, None)
+        expected = prob * conditional
+
+        frame.loc[mask, "prob_play"] = prob
+        frame.loc[mask, "points_if_plays"] = conditional
+        frame.loc[mask, "predicted_points"] = expected
+
+        LOGGER.info("  %s: %d rows | P(play) %.2f avg | pts|play %.2f avg | xPts %.2f avg "
+                    "(max %.2f)", position, int(mask.sum()), float(np.mean(prob)),
+                    float(np.mean(conditional)), float(np.mean(expected)),
+                    float(np.max(expected)))
+
+        # A classifier that never commits is usually a sign the features did not
+        # survive to inference — worth a warning before it silently flattens the
+        # whole squad selection.
+        if float(np.std(prob)) < 0.02:
+            LOGGER.warning("  %s: P(play) is nearly constant (sd %.4f). Check that the "
+                           "minutes_* rolling features reached the model.",
+                           position, float(np.std(prob)))
 
     unscored = frame["predicted_points"].isna()
     if unscored.any():
@@ -712,10 +857,22 @@ def collapse_to_players(frame: pd.DataFrame) -> pd.DataFrame:
         .groupby("element_id")["_label"].apply(lambda s: " + ".join(s))
     )
 
+    # Double gameweeks: `predicted_points` and `points_if_plays` SUM across the
+    # player's fixtures, but `prob_play` must not — it is a probability per
+    # fixture, and summing two 0.9s to 1.8 is meaningless. Averaging keeps it
+    # interpretable as "how likely is he to feature", which is what a human
+    # reads it as.
+    per_player = frame.groupby("element_id").agg(
+        prob_play=("prob_play", "mean"),
+        points_if_plays=("points_if_plays", "sum"),
+    )
+
     collapsed = aggregate_double_gameweeks(
         frame.rename(columns={"element_id": "player_id"})
     )
     collapsed["fixtures"] = collapsed["player_id"].map(fixture_labels)
+    for column in ("prob_play", "points_if_plays"):
+        collapsed[column] = collapsed["player_id"].map(per_player[column])
     return collapsed
 
 
@@ -728,9 +885,12 @@ def _rows(block: pd.DataFrame) -> str:
     for _, row in block.iterrows():
         marker = "(C)" if row["is_captain"] else ("(V)" if row.get("is_vice") else "")
         name = f"{row['player_name']} {marker}".strip()
+        prob = row.get("prob_play")
+        prob_text = f"{prob:>5.0%}" if pd.notna(prob) else "    -"
         lines.append(
             f"  {row['position']:<4} {name:<24.24} {str(row['team']):<13.13} "
-            f"{str(row.get('fixtures', '')):<18.18} {row['cost']:>5.1f} {row['predicted_points']:>7.2f}"
+            f"{str(row.get('fixtures', '')):<18.18} {row['cost']:>5.1f} "
+            f"{prob_text} {row['predicted_points']:>7.2f}"
         )
     return "\n".join(lines)
 
@@ -743,7 +903,8 @@ def print_live_report(squad: pd.DataFrame, gameweek: int, config: LiveConfig,
 
     xi_points = float(starters["predicted_points"].sum())
     total = xi_points + float(captain["predicted_points"])
-    header = f"{'POS':<4} {'PLAYER':<24} {'TEAM':<13} {'FIXTURE':<18} {'COST':>5} {'xPTS':>7}"
+    header = (f"{'POS':<4} {'PLAYER':<24} {'TEAM':<13} {'FIXTURE':<18} "
+              f"{'COST':>5} {'P(pl)':>5} {'xPTS':>7}")
 
     print("\n" + "=" * 82)
     print(f"OPTIMAL SQUAD — UPCOMING GAMEWEEK {gameweek}".center(82))
@@ -804,7 +965,7 @@ def run_live_inference(config: LiveConfig) -> Dict[str, Any]:
 
     fixture_rows = build_fixture_rows(players, fixtures, team_lookup, gameweek)
 
-    bundles, _ = load_models(config.model_dir)
+    bundles, _ = load_two_stage_models(config.model_dir)
     needed = required_rolling_features(bundles)
 
     history = load_history(config.features_path)
