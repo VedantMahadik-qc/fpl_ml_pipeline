@@ -121,6 +121,14 @@ python fpl_season_sim.py --seeds $(seq 1 15) --ensemble 5     # ensemble row
 python fpl_season_sim.py --retrain-every 4                    # walk-forward retraining
 ```
 
+### Live: following the bot in 2026-27
+
+The replay is a completed season. The live test is one FPL account making
+exactly the moves `fpl_weekly.py` lists each week from GW9, the first deadline
+planned with every fix above, next to a manager picking by hand, both measured
+against the average of all ~11m managers. `python fpl_track.py` refreshes
+[tracking/README.md](tracking/README.md) after each gameweek.
+
 ---
 
 ## Architecture
@@ -542,6 +550,8 @@ STARTING XI  (5-2-3)
 ├── fpl_odds.py                 # bookmaker odds -> Poisson goal rates
 ├── fpl_season_sim.py           # season replay against real results
 ├── fpl_weekly.py               # refresh + retrain + plan, before each deadline
+├── fpl_track.py                # live accounts vs the average manager
+├── tracking/                   # live tracking table and chart
 ├── tests/                      # pytest: rules, auto-subs, features, solver
 ├── sim_results/                # replay output: per-GW logs, summary, chart
 ├── requirements.txt

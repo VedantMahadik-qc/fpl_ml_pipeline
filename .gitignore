@@ -33,6 +33,10 @@ models/
 # --- weekly reports: your own team's plan ---
 reports/
 
+# --- live tracking: team ids open public profiles with real names ---
+tracking/accounts.json
+!tracking/*.csv
+
 # --- solver output (Phase 4 & 5) ---
 squad.csv
 live_squad.csv
