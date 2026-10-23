@@ -9,7 +9,8 @@ Pipeline
 --------
   1. Drop `xp`                      — post-match scrape, severe lookahead bias.
   2. Benchwarmers adjustments       — expected_assists x 1.4
-                                      clean_sheet_probability = exp(-xGC)
+                                      clean_sheet_probability = exp(-xGC),
+                                      appearances only (NaN on 0 minutes)
   3. Sort + group by player         — chronological, one series per player.
   4. Rolling means (3/5/10)         — every window is .shift(1)'d, so gameweek N
                                       sees only N-1 and older. Never N itself.
@@ -45,10 +46,10 @@ Leakage notes worth reading before you trust the output
 * Rolling windows are strictly causal. `verify_no_leakage()` re-derives a sample
   of feature values from prior rows only and asserts they match; it runs by
   default and fails loudly.
-* Position medians are fitted over the whole file. That is mild lookahead: a
-  2023-24 row is filled from a median that saw 2025-26 data. For a clean
-  backtest, fit the imputer on your training slice and reuse it — the imputer is
-  a fit/transform class and `--medians-out` writes the fitted values to JSON.
+* Position medians are fitted over the whole file by default. That is mild
+  lookahead: a 2023-24 row is filled from a median that saw 2025-26 data. For a
+  clean backtest pass `--fit-seasons 2023-24 2024-25` so the held-out season is
+  only ever filled from training data (the season simulator does this itself).
 * `defensive_contribution` only exists from 2025/26 onward. A global position
   median therefore fabricates it for 2023-24 and 2024-25. The script reports
   exactly how many rows that affects; `--median-groups position season` scopes
@@ -96,6 +97,13 @@ ROLLING_METRICS: List[str] = [
 ]
 
 DEFAULT_WINDOWS: List[int] = [3, 5, 10]
+
+# Metrics that only mean something when the player was on the pitch. They are
+# NaN on non-appearances and roll over a player's last N APPEARANCES rather than
+# his last N gameweeks. clean_sheet_probability is the one that matters: a
+# benchwarmer has xGC = 0, so exp(-xGC) would score every non-appearance as a
+# certain clean sheet and turn the feature into an inverted minutes flag.
+APPEARANCE_ONLY_METRICS: frozenset = frozenset({"clean_sheet_probability"})
 
 # FPL Benchwarmers: FPL's raw xA understates fantasy assist value.
 FANTASY_ASSIST_MULTIPLIER: float = 1.4
@@ -158,6 +166,7 @@ class FeatureConfig:
     metrics: Sequence[str] = tuple(ROLLING_METRICS)
     group_by: str = "name"
     median_groups: Sequence[str] = ("position",)
+    fit_seasons: Optional[Sequence[str]] = None   # None -> fit medians on every row
     partial_windows: bool = False      # True -> min_periods=1 instead of window
     assist_multiplier: float = FANTASY_ASSIST_MULTIPLIER
     verify: bool = True
@@ -235,6 +244,9 @@ def apply_benchwarmer_adjustments(
         Goals conceded are near-Poisson, so P(0 conceded) = exp(-lambda) with
         lambda = expected_goals_conceded. This turns a continuous defensive
         metric into a calibrated probability, which is what the CS points are.
+        Only defined for appearances: with 0 minutes xGC is 0 and exp(0) = 1, a
+        certain clean sheet for a player who never left the bench. Those rows
+        are NaN instead (see APPEARANCE_ONLY_METRICS).
     """
     frame = frame.copy()
 
@@ -249,10 +261,11 @@ def apply_benchwarmer_adjustments(
 
     if "expected_goals_conceded" in frame.columns:
         xgc = pd.to_numeric(frame["expected_goals_conceded"], errors="coerce")
-        frame["clean_sheet_probability"] = np.exp(-xgc)
+        minutes = pd.to_numeric(frame.get("minutes"), errors="coerce")
+        frame["clean_sheet_probability"] = np.exp(-xgc).where(minutes > 0)
         observed = frame["clean_sheet_probability"].notna().sum()
-        LOGGER.info("Built clean_sheet_probability = exp(-xGC) for %d/%d rows.",
-                    observed, len(frame))
+        LOGGER.info("Built clean_sheet_probability = exp(-xGC) for %d/%d rows "
+                    "(appearances only).", observed, len(frame))
     else:
         LOGGER.warning("`expected_goals_conceded` not found — clean_sheet_probability is NaN.")
         frame["clean_sheet_probability"] = np.nan
@@ -753,6 +766,19 @@ def rolling_column_name(metric: str, window: int) -> str:
     return f"{metric}_roll_{window}"
 
 
+def _rolling_over_appearances(series: pd.Series, window: int, min_periods: int) -> pd.Series:
+    """
+    Mean of the last `window` non-NaN values strictly before each row.
+
+    Roll the observed values inclusively, carry the latest result forward over
+    the gaps, then shift by one row. Row N therefore sees appearances up to and
+    including N-1 and never N itself, exactly like the per-gameweek path.
+    """
+    observed = series.dropna()
+    rolled = observed.rolling(window=window, min_periods=min_periods).mean()
+    return rolled.reindex(series.index).ffill().shift(1)
+
+
 def add_rolling_features(
     frame: pd.DataFrame,
     key: str,
@@ -770,6 +796,10 @@ def add_rolling_features(
     min_periods defaults to the full window: a player with 4 prior games gets NaN
     for the 10-game feature (and is imputed later), rather than a "10-game mean"
     silently computed from 4. `partial_windows=True` relaxes this to 1.
+
+    APPEARANCE_ONLY_METRICS roll over the last N non-NaN values instead, so a
+    starter who missed one match keeps his clean-sheet form rather than going
+    NaN for N gameweeks.
     """
     frame = frame.copy()
     available = [m for m in metrics if m in frame.columns]
@@ -788,20 +818,29 @@ def add_rolling_features(
     shifted[key] = frame[key].values
     shifted_groups = shifted.groupby(key, sort=False)
 
+    per_gameweek = [m for m in available if m not in APPEARANCE_ONLY_METRICS]
+    per_appearance = [m for m in available if m in APPEARANCE_ONLY_METRICS]
+
     created: List[str] = []
     for window in windows:
         min_periods = 1 if partial_windows else window
-        rolled = (
-            shifted_groups[available]
-            .rolling(window=window, min_periods=min_periods)
-            .mean()
-            .reset_index(level=0, drop=True)
-            .sort_index()
-        )
+        if per_gameweek:
+            rolled = (
+                shifted_groups[per_gameweek]
+                .rolling(window=window, min_periods=min_periods)
+                .mean()
+                .reset_index(level=0, drop=True)
+                .sort_index()
+            )
+            for metric in per_gameweek:
+                frame[rolling_column_name(metric, window)] = rolled[metric]
+
+        for metric in per_appearance:
+            frame[rolling_column_name(metric, window)] = grouped[metric].transform(
+                _rolling_over_appearances, window=window, min_periods=min_periods)
+
         for metric in available:
-            name = rolling_column_name(metric, window)
-            frame[name] = rolled[metric]
-            created.append(name)
+            created.append(rolling_column_name(metric, window))
         LOGGER.info("Built %d rolling features for window=%d (min_periods=%d).",
                     len(available), window, min_periods)
 
@@ -964,7 +1003,10 @@ def verify_no_leakage(
                 actual = frame[f"{column}__preimpute"].iloc[pos]
                 if pd.isna(actual):
                     continue
-                expected = prior[metric].tail(window).mean()
+                history = prior[metric]
+                if metric in APPEARANCE_ONLY_METRICS:
+                    history = history.dropna()
+                expected = history.tail(window).mean()
                 assert not pd.isna(expected), f"{column}@{pos}: expected NaN, got {actual}"
                 assert abs(expected - actual) < tolerance, (
                     f"LEAKAGE/MISMATCH at position {pos}, {column}: "
@@ -1032,7 +1074,14 @@ def build_features(config: FeatureConfig) -> pd.DataFrame:
 
     # 5. Cold-start imputation — fills NaNs, keeps every row.
     imputer = PositionMedianImputer(config.median_groups)
-    frame, report = imputer.fit_transform(frame, created)
+    fit_rows = frame
+    if config.fit_seasons:
+        fit_rows = frame[frame["season"].isin(config.fit_seasons)]
+        if fit_rows.empty:
+            raise RuntimeError(f"--fit-seasons {list(config.fit_seasons)} matched no rows.")
+        LOGGER.info("Fitting imputation medians on %s only (%d rows).",
+                    list(config.fit_seasons), len(fit_rows))
+    frame, report = imputer.fit(fit_rows, created).transform(frame)
     LOGGER.info("Imputation summary (top 10 by count):\n%s",
                 report.sort_values("imputed", ascending=False).head(10).to_string())
     if config.medians_path:
@@ -1076,6 +1125,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Player series key: name (default) | element | season_element")
     parser.add_argument("--median-groups", nargs="+", default=["position"],
                         help="Columns defining imputation groups (default: position)")
+    parser.add_argument("--fit-seasons", nargs="+", default=None,
+                        help="Fit imputation medians on these seasons only, so a "
+                             "held-out season is never filled from its own data")
     parser.add_argument("--assist-multiplier", type=float, default=FANTASY_ASSIST_MULTIPLIER)
     parser.add_argument("--partial-windows", action="store_true",
                         help="min_periods=1 instead of the full window")
@@ -1112,6 +1164,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         metrics=tuple(args.metrics),
         group_by=args.group_by,
         median_groups=tuple(args.median_groups),
+        fit_seasons=tuple(args.fit_seasons) if args.fit_seasons else None,
         partial_windows=args.partial_windows,
         assist_multiplier=args.assist_multiplier,
         verify=not args.no_verify,
