@@ -29,6 +29,9 @@ fpl_position_medians.json
 models/
 !models/.gitkeep
 
+# --- weekly reports: your own team's plan ---
+reports/
+
 # --- solver output (Phase 4 & 5) ---
 squad.csv
 live_squad.csv

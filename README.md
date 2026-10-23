@@ -407,6 +407,9 @@ python fpl_optimizer.py --gameweek 38
 # Phase 5 — live: optimal squad for the UPCOMING gameweek
 python fpl_live_inference.py
 
+# Or all of the live steps at once, for your own team
+python fpl_weekly.py --team-id 1234567
+
 # Season replay — score the whole pipeline against a completed season
 python fpl_season_sim.py
 
@@ -416,21 +419,32 @@ pip install -r requirements-dev.txt && pytest
 
 ### Weekly live run
 
-Phase 1's response cache never expires, which makes reruns after a failure cheap
-but means a second ingest in the same cache directory replays old responses.
-Point each week's run at a fresh directory:
+One command before each deadline:
 
 ```bash
-# ~6 min: archive seasons plus every played gameweek of the live season
-python fpl_ingest.py --seasons 2023-24 2024-25 2025-26 --cache-dir .fpl_cache/$(date +%F)
-
-python fpl_features.py
-# Train on every completed season; the live season so far is the test set
-python fpl_train.py --train-seasons 2023-24 2024-25 2025-26 --test-season 2026-27
-
-python fpl_transfers.py --team-id <your FPL id> --horizon 4   # plan for your squad
-python fpl_live_inference.py --bench-weight 0.1               # or a fresh 15
+python fpl_weekly.py --team-id 1234567     # your transfer plan, 4 weeks ahead
+python fpl_weekly.py                       # or the best fresh 15 (wildcard)
 ```
+
+Your team id is the number in the URL of your FPL Points page,
+`fantasy.premierleague.com/entry/1234567/event/8`. The run:
+
+1. **Refreshes** every played gameweek of the live season plus the three
+   completed seasons before it, about 6 minutes. Phase 1's cache never expires,
+   so each day gets its own folder (`.fpl_cache/2026-10-30`); a second run the
+   same day reuses it and takes seconds. `--no-refresh` skips straight to the
+   plan.
+2. **Rebuilds features and retrains** on the completed seasons, testing on the
+   live season so far.
+3. **Plans** with `--team-id`: your squad, bank, free transfers and selling
+   prices come from FPL's public endpoints. Free transfers are replayed from your
+   gameweek history (banked up to five, chip weeks kept), and owned players are
+   valued at what selling them raises, half of any rise since you bought them.
+   Injured players you own stay in at 0 points so the plan can sell or bench
+   them.
+4. **Reports**: the plan prints in the terminal and is saved as a page in
+   `reports/` (`--open` opens it). Only the first week is a commitment; the rest
+   is structure for next week's run.
 
 Two live-season quirks are repaired on the way in. The live API names some
 clubs differently from the archive ("Ipswich Town" vs "Ipswich"); both map to
@@ -511,6 +525,7 @@ STARTING XI  (5-2-3)
 ├── fpl_transfers.py            # multi-period transfer solver
 ├── fpl_odds.py                 # bookmaker odds -> Poisson goal rates
 ├── fpl_season_sim.py           # season replay against real results
+├── fpl_weekly.py               # refresh + retrain + plan, before each deadline
 ├── tests/                      # pytest: rules, auto-subs, features, solver
 ├── sim_results/                # replay output: per-GW logs, summary, chart
 ├── requirements.txt

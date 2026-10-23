@@ -84,6 +84,22 @@ except ImportError as exc:  # pragma: no cover
 
 LOGGER = logging.getLogger("fpl.optimizer")
 
+
+def ensure_printable_console() -> None:
+    """
+    Never crash on a player's name.
+
+    A Windows console, or any stdout redirected to a file or pipe, can default
+    to a legacy code page that has no "ö" or "ı", and printing a squad then
+    raises UnicodeEncodeError halfway through the report. Unencodable
+    characters become "?" instead; a UTF-8 terminal is left untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if encoding != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
+
 POSITIONS: List[str] = ["GKP", "DEF", "MID", "FWD"]
 
 # Squad composition mandated by FPL.
@@ -676,6 +692,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    ensure_printable_console()
     args = parse_args(argv)
     logging.basicConfig(
         level=getattr(logging, args.log_level),

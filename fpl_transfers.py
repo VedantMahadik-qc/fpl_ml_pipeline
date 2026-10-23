@@ -68,10 +68,9 @@ than the big-M indicator an exact formulation would need.
 Modelling simplifications, stated plainly
 -----------------------------------------
 * PRICES ARE STATIC across the horizon. Real prices drift nightly with transfer
-  volume, and FPL's selling-price rule (you keep only half your profit, rounded
-  down) needs per-player purchase prices we do not track. Both are modelled as
-  "buy and sell at today's price". Over 4-6 weeks the error is small; over 20 it
-  is not.
+  volume; here they are frozen at today's. With --team-id, owned players are
+  valued at their real selling price (half of any rise since purchase, from the
+  public transfer log); with a manual squad they sell at today's price.
 * FORM IS FROZEN at the latest observation. Rolling features for GW N+3 would
   need GW N+1 and N+2 results, which do not exist. Only the fixture varies
   across the horizon — opponent, venue, and the resulting difficulty. This is
@@ -80,7 +79,8 @@ Modelling simplifications, stated plainly
   additional binary per gameweek; `--wildcard` only means "ignore the starting
   squad in week 1".
 * AVAILABILITY IS A WEEK-1 SNAPSHOT. A player injured today is excluded for the
-  whole horizon even if he would return in week 4.
+  whole horizon even if he would return in week 4. An injured player you OWN
+  stays in the pool at 0 points, so the plan can sell or bench him.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -111,6 +111,7 @@ from fpl_optimizer import (
     SQUAD_QUOTA,
     SQUAD_SIZE,
     STARTING_XI,
+    ensure_printable_console,
 )
 
 # Two-stage model loading (V4). Imported at MODULE level, deliberately:
@@ -133,6 +134,8 @@ LOGGER = logging.getLogger("fpl.transfers")
 BASE_URL = "https://fantasy.premierleague.com/api"
 ENTRY_PICKS_URL = f"{BASE_URL}/entry/{{entry_id}}/event/{{event}}/picks/"
 ENTRY_URL = f"{BASE_URL}/entry/{{entry_id}}/"
+ENTRY_HISTORY_URL = f"{BASE_URL}/entry/{{entry_id}}/history/"
+ENTRY_TRANSFERS_URL = f"{BASE_URL}/entry/{{entry_id}}/transfers/"
 
 MAX_FREE_TRANSFERS = 5          # FPL rolls up to 5 from 2024/25
 HIT_COST = 4.0                  # points per excess transfer
@@ -158,7 +161,7 @@ class TransferConfig:
     entry_id: Optional[int] = None
     current_squad: Sequence[int] = ()
     current_bank: float = 0.0
-    free_transfers: int = 1
+    free_transfers: Optional[int] = None   # None -> derived from --team-id, else 1
     wildcard: bool = False
     horizon: int = 5
     decay: float = 0.85
@@ -179,69 +182,172 @@ class TransferConfig:
 # 2. Initial squad state (t = 0)
 # --------------------------------------------------------------------------- #
 
-def load_squad_state(config: TransferConfig, client=None) -> Tuple[List[int], float, int]:
+def load_squad_state(config: TransferConfig, client=None
+                     ) -> Tuple[List[int], float, int, Dict[int, float]]:
     """
-    Resolve (squad element ids, bank in £m, free transfers) for t = 0.
+    Resolve (squad element ids, bank in £m, free transfers, purchase prices) for t = 0.
 
     Sources, in priority order: --wildcard, --squad-json, --team-id (live API),
-    then the explicit --squad / --bank / --free-transfers flags.
+    then the explicit --squad / --bank / --free-transfers flags. Purchase prices
+    are only known for --team-id; elsewhere owned players sell at today's price.
+    An explicit --free-transfers always wins over a derived count.
     """
     if config.wildcard:
         LOGGER.info("Wildcard mode: no starting squad, week 1 is a free selection.")
-        return [], config.budget, MAX_FREE_TRANSFERS
+        return [], config.budget, MAX_FREE_TRANSFERS, {}
 
     if config.squad_json:
         payload = json.loads(Path(config.squad_json).read_text(encoding="utf-8"))
         squad = [int(i) for i in payload.get("squad", payload.get("picks", []))]
         bank = float(payload.get("bank", config.current_bank))
-        free = int(payload.get("free_transfers", config.free_transfers))
+        free = int(payload.get("free_transfers", config.free_transfers or 1))
         LOGGER.info("Loaded squad state from %s: %d players, bank %.1f, %d FT.",
                     config.squad_json, len(squad), bank, free)
-        return squad, bank, free
+        return squad, bank, free, {}
 
     if config.entry_id and client is not None:
-        return fetch_entry_state(client, config.entry_id)
+        state = fetch_entry_state(client, config.entry_id, config.features_path)
+        if config.free_transfers is not None and config.free_transfers != state["free"]:
+            LOGGER.info("Using --free-transfers %d instead of the derived %d.",
+                        config.free_transfers, state["free"])
+            state["free"] = config.free_transfers
+        return state["squad"], state["bank"], state["free"], state["purchase_prices"]
 
     squad = [int(i) for i in config.current_squad]
+    free = config.free_transfers if config.free_transfers is not None else 1
     if squad:
         LOGGER.info("Using squad from --squad: %d players, bank %.1f, %d FT.",
-                    len(squad), config.current_bank, config.free_transfers)
-    return squad, config.current_bank, config.free_transfers
+                    len(squad), config.current_bank, free)
+    return squad, config.current_bank, free, {}
 
 
-def fetch_entry_state(client, entry_id: int) -> Tuple[List[int], float, int]:
-    """Pull the manager's current picks, bank and FT count from the FPL API."""
-    entry = client.get_json(ENTRY_URL.format(entry_id=entry_id), cache_key=f"entry_{entry_id}")
+def replay_free_transfers(history: Dict[str, Any]) -> Tuple[int, List[str]]:
+    """
+    Free transfers available for the next deadline, replayed from the season.
+
+    The API never states the count, but `entry/{id}/history/` records every
+    gameweek's transfers and hit cost, which is enough to replay the rule: one
+    free transfer after the opening squad, then
+    FT[t+1] = min(5, max(0, FT[t] - transfers[t]) + 1). Wildcard and Free Hit
+    weeks report zero transfers and keep the bank, which the same formula
+    handles. Each week's hit cost is checked against the replay; a mismatch
+    means a rule we do not model (a one-off FPL top-up, say) and is reported.
+    """
+    weeks = sorted(history.get("current", []), key=lambda g: g["event"])
+    if not weeks:
+        return 1, ["no gameweeks played yet"]
+
+    problems: List[str] = []
+    free = 1                                   # after the opening squad
+    for week in weeks[1:]:
+        made = int(week.get("event_transfers", 0))
+        hits = int(week.get("event_transfers_cost", 0)) // int(HIT_COST)
+        expected = max(0, made - free)
+        if hits != expected:
+            problems.append(f"GW{week['event']}: {hits} hit(s) charged, replay expected "
+                            f"{expected} with {free} FT")
+        free = min(MAX_FREE_TRANSFERS, max(0, free - made) + 1)
+    return free, problems
+
+
+def purchase_prices(transfers: List[Dict[str, Any]], squad: Sequence[int],
+                    free_hit_weeks: Iterable[int],
+                    opening_prices: Dict[int, float]) -> Dict[int, float]:
+    """
+    What the manager paid for each owned player, in £m.
+
+    The latest transfer-in of each player gives his price; Free Hit transfers
+    are skipped because that squad reverts. Anyone never transferred in was
+    in the opening squad and cost his first price of the season.
+    """
+    skip = set(free_hit_weeks)
+    paid: Dict[int, float] = {}
+    for transfer in sorted(transfers, key=lambda t: t.get("time", "")):
+        if transfer.get("event") in skip:
+            continue
+        paid[int(transfer["element_in"])] = transfer["element_in_cost"] / 10.0
+    return {pid: paid.get(pid, opening_prices.get(pid)) for pid in squad
+            if paid.get(pid, opening_prices.get(pid)) is not None}
+
+
+def selling_value(paid: float, current: float) -> float:
+    """FPL keeps half of any rise, rounded down to £0.1m; falls are taken in full."""
+    paid_t, current_t = int(round(paid * 10)), int(round(current * 10))
+    if current_t <= paid_t:
+        return current_t / 10.0
+    return (paid_t + (current_t - paid_t) // 2) / 10.0
+
+
+def opening_prices_from_history(features_path: Path) -> Dict[int, float]:
+    """Each player's first recorded price of the latest season in the feature file."""
+    try:
+        frame = pd.read_csv(features_path, usecols=["season", "player_id", "gameweek",
+                                                    "gw_cost"])
+    except (FileNotFoundError, ValueError) as exc:
+        LOGGER.warning("Could not read opening prices from %s: %s", features_path, exc)
+        return {}
+    latest = frame[frame["season"] == frame["season"].max()].sort_values("gameweek")
+    first = latest.dropna(subset=["gw_cost"]).groupby("player_id").head(1)
+    return dict(zip(first["player_id"].astype(int), first["gw_cost"].astype(float)))
+
+
+def fetch_entry_state(client, entry_id: int,
+                      features_path: Path = Path("fpl_ml_features.csv")) -> Dict[str, Any]:
+    """
+    Pull the manager's squad, bank, free transfers and purchase prices.
+
+    Picks give the squad and bank; history gives the free-transfer replay and
+    chips; the transfer log gives what was paid. If the latest gameweek was a
+    Free Hit, the squad that carries forward is the one from the week before.
+    """
+    entry = client.get_json(ENTRY_URL.format(entry_id=entry_id))
     if not entry:
         raise RuntimeError(f"Could not fetch entry {entry_id}. Is the team id correct?")
-
     event = entry.get("current_event")
     if event is None:
         raise RuntimeError(f"Entry {entry_id} has no current gameweek — season not started?")
 
-    picks = client.get_json(ENTRY_PICKS_URL.format(entry_id=entry_id, event=event),
-                            cache_key=f"entry_{entry_id}_picks_{event}")
+    history = client.get_json(ENTRY_HISTORY_URL.format(entry_id=entry_id)) or {}
+    chips = {c["event"]: c["name"] for c in history.get("chips", [])}
+    squad_event = event - 1 if chips.get(event) == "freehit" and event > 1 else event
+    if squad_event != event:
+        LOGGER.info("GW%d was a Free Hit; planning from the GW%d squad it reverts to.",
+                    event, squad_event)
+
+    picks = client.get_json(ENTRY_PICKS_URL.format(entry_id=entry_id, event=squad_event))
     if not picks or "picks" not in picks:
-        raise RuntimeError(f"Could not fetch picks for entry {entry_id}, GW{event}.")
-
+        raise RuntimeError(f"Could not fetch picks for entry {entry_id}, GW{squad_event}.")
     squad = [int(p["element"]) for p in picks["picks"]]
-    history = picks.get("entry_history", {})
-    bank = float(history.get("bank", 0)) / 10.0
+    current = next((g for g in history.get("current", []) if g["event"] == event), None)
+    bank = float((current or picks.get("entry_history", {})).get("bank", 0)) / 10.0
 
-    # The API does not expose the FT count directly; derive it from the chip and
-    # transfer history where possible, otherwise assume 1 and let the user override.
-    free = 1
-    LOGGER.info("Entry %s (GW%s): %d players, bank %.1f. Assuming %d free transfer(s) "
-                "— override with --free-transfers if wrong.",
-                entry_id, event, len(squad), bank, free)
-    return squad, bank, free
+    free, problems = replay_free_transfers(history)
+    for problem in problems:
+        LOGGER.warning("Free-transfer replay: %s. Pass --free-transfers if the count "
+                       "below is wrong.", problem)
+
+    transfers = client.get_json(ENTRY_TRANSFERS_URL.format(entry_id=entry_id)) or []
+    pending = [t for t in transfers if t.get("event", 0) > event]
+    if pending:
+        LOGGER.warning("%d transfer(s) already made for GW%d are not in the picks yet; the "
+                       "plan starts from the squad before them.", len(pending), event + 1)
+    free_hits = [e for e, name in chips.items() if name == "freehit"]
+    paid = purchase_prices([t for t in transfers if t.get("event", 0) <= event], squad,
+                           free_hits, opening_prices_from_history(features_path))
+
+    LOGGER.info("Entry %s (GW%s): %d players, bank %.1f, %d free transfer(s) for the "
+                "next deadline; purchase prices known for %d/%d.",
+                entry_id, event, len(squad), bank, free, len(paid), len(squad))
+    return {"squad": squad, "bank": bank, "free": free, "purchase_prices": paid,
+            "event": event}
 
 
 # --------------------------------------------------------------------------- #
 # Horizon projections
 # --------------------------------------------------------------------------- #
 
-def build_horizon_projections(config: TransferConfig) -> pd.DataFrame:
+def build_horizon_projections(config: TransferConfig,
+                              owned: Sequence[int] = ()) -> pd.DataFrame:
     """
     Score every available player for each of the next H gameweeks.
 
@@ -285,8 +391,8 @@ def build_horizon_projections(config: TransferConfig) -> pd.DataFrame:
     fixtures = fetch_future_fixtures(client)
     first_gw = resolve_next_gameweek(bootstrap, fixtures, None)
 
-    players = filter_available(
-        build_live_players(bootstrap, team_lookup, position_lookup), live_config)
+    everyone = build_live_players(bootstrap, team_lookup, position_lookup)
+    players = filter_available(everyone, live_config)
 
     # V4: loads the split _prob/_pts XGBoost files natively. Falls back to the
     # combined TwoStageModel wrapper, then to a V3 single regressor.
@@ -330,7 +436,34 @@ def build_horizon_projections(config: TransferConfig) -> pd.DataFrame:
 
     if not frames:
         raise RuntimeError("No gameweeks could be projected.")
-    return pd.concat(frames, ignore_index=True)
+    projections = pd.concat(frames, ignore_index=True)
+    return add_unavailable_owned(projections, everyone, owned)
+
+
+def add_unavailable_owned(projections: pd.DataFrame, everyone: pd.DataFrame,
+                          owned: Sequence[int]) -> pd.DataFrame:
+    """
+    Keep owned players the availability filter removed, at 0 points.
+
+    An injured or suspended player still fills a squad slot until he is sold.
+    Dropping him leaves the continuity constraints with nothing to bind to and
+    the plan infeasible, so he goes back in projecting nothing, which lets the
+    solver sell him or leave him on the bench.
+    """
+    missing = sorted(set(int(i) for i in owned) - set(projections["player_id"].astype(int)))
+    if not missing:
+        return projections
+    meta = everyone.set_index("element_id").reindex(missing)
+    first = int(projections["gameweek"].min())
+    rows = pd.DataFrame({
+        "player_id": missing, "gameweek": first, "predicted_points": 0.0,
+        "cost": meta["now_cost"].to_numpy(), "position": meta["position"].to_numpy(),
+        "team": meta["team"].to_numpy(), "player_name": meta["player_name"].to_numpy(),
+        "fixtures": "unavailable",
+    })
+    news = "; ".join(f"{n} ({s})" for n, s in zip(meta["web_name"], meta["status"]))
+    LOGGER.info("Kept %d unavailable owned player(s) at 0 points: %s", len(missing), news)
+    return pd.concat([projections, rows], ignore_index=True)
 
 
 def _assert_fdr_present(matrix: pd.DataFrame, gameweek: int) -> None:
@@ -357,7 +490,7 @@ def _assert_fdr_present(matrix: pd.DataFrame, gameweek: int) -> None:
     LOGGER.debug("GW%d: %d FDR columns populated.", gameweek, len(base))
 
 
-def load_projections(config: TransferConfig) -> pd.DataFrame:
+def load_projections(config: TransferConfig, owned: Sequence[int] = ()) -> pd.DataFrame:
     """Read a precomputed projection table, or build one from the live API."""
     if config.projections_csv:
         frame = pd.read_csv(config.projections_csv)
@@ -384,7 +517,7 @@ def load_projections(config: TransferConfig) -> pd.DataFrame:
         LOGGER.info("Loaded projections from %s: %d rows, %d gameweeks.",
                     config.projections_csv, len(frame), frame["gameweek"].nunique())
         return frame
-    return build_horizon_projections(config)
+    return build_horizon_projections(config, owned)
 
 
 def prune_candidates(
@@ -754,8 +887,13 @@ class MultiPeriodOptimizer:
             squad["fixtures"] = [self.fixtures.get((i, t), "") for i in chosen]
             squad = squad.reset_index()
 
-            transfers_in = [i for i in self.ids if self.tin[i][t].value() > 0.5]
-            transfers_out = [i for i in self.ids if self.tout[i][t].value() > 0.5]
+            # Sorted by position so the report pairs like with like: squad quotas
+            # are fixed, so every week sells and buys the same position mix.
+            by_position = lambda i: (POSITIONS.index(self.players.at[i, "position"]), i)  # noqa: E731
+            transfers_in = sorted((i for i in self.ids if self.tin[i][t].value() > 0.5),
+                                  key=by_position)
+            transfers_out = sorted((i for i in self.ids if self.tout[i][t].value() > 0.5),
+                                   key=by_position)
 
             starters = squad[squad["is_starter"]]
             captain = squad[squad["is_captain"]]
@@ -945,7 +1083,7 @@ def run(config: TransferConfig) -> Dict[str, Any]:
         from fpl_live_inference import LiveConfig, make_client
         client = make_client(LiveConfig(model_dir=config.model_dir))
 
-    squad, bank, free = load_squad_state(config, client)
+    squad, bank, free, purchase = load_squad_state(config, client)
 
     # Fresh start / wildcard detection. No squad at t=0 means there is nothing
     # to transfer FROM, so week 1 is an unconstrained legal build: x[i,1] is set
@@ -959,7 +1097,8 @@ def run(config: TransferConfig) -> Dict[str, Any]:
         bank = config.budget
         free = MAX_FREE_TRANSFERS
 
-    projections = load_projections(config)
+    projections = load_projections(config, squad)
+    projections = apply_selling_prices(projections, purchase)
     result = plan_transfers(projections, squad, bank, free, config)
 
     if config.output_path:
@@ -969,6 +1108,27 @@ def run(config: TransferConfig) -> Dict[str, Any]:
         LOGGER.info("Wrote plan to %s", path)
 
     return result
+
+
+def apply_selling_prices(projections: pd.DataFrame,
+                         purchase: Dict[int, float]) -> pd.DataFrame:
+    """
+    Value owned players at what selling them would actually raise.
+
+    The solver uses one price per player for both buying and selling. For an
+    owned player the relevant number is his selling price, which keeps only
+    half of any rise since purchase; using today's price overstates the budget.
+    """
+    if not purchase:
+        return projections
+    projections = projections.copy()
+    owned = projections["player_id"].isin(purchase)
+    today = projections.loc[owned].drop_duplicates("player_id").set_index("player_id")["cost"]
+    sale = {int(pid): selling_value(purchase[int(pid)], cost) for pid, cost in today.items()}
+    projections.loc[owned, "cost"] = projections.loc[owned, "player_id"].map(sale)
+    LOGGER.info("%d owned player(s) valued at selling price: %.1f to sell vs %.1f at "
+                "today's prices.", len(sale), sum(sale.values()), float(today.sum()))
+    return projections
 
 
 def plan_transfers(projections: pd.DataFrame, squad: Sequence[int], bank: float,
@@ -1019,7 +1179,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     squad_group.add_argument("--squad", default="",
                              help="Comma-separated element ids of your current 15")
     squad_group.add_argument("--bank", type=float, default=0.0, help="Cash in the bank (£m)")
-    squad_group.add_argument("--free-transfers", type=int, default=1)
+    squad_group.add_argument("--free-transfers", type=int, default=None,
+                             help="Override the free-transfer count (derived from "
+                                  "--team-id history, else 1)")
     squad_group.add_argument("--wildcard", action="store_true",
                              help="Ignore the current squad; week 1 is a free selection")
 
@@ -1045,6 +1207,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    ensure_printable_console()
     args = parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level),
                         format="%(asctime)s | %(levelname)-7s | %(message)s",

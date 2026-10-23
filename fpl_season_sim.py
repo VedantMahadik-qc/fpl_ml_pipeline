@@ -75,7 +75,8 @@ from fpl_features import (
     derive_fdr_matchups,
 )
 from fpl_odds import ODDS_PREFIX
-from fpl_optimizer import FORMATION_BOUNDS, POSITIONS, predict_points
+from fpl_optimizer import (FORMATION_BOUNDS, POSITIONS, ensure_printable_console,
+                           predict_points)
 from fpl_transfers import HIT_COST, MAX_FREE_TRANSFERS, TransferConfig, plan_transfers
 
 LOGGER = logging.getLogger("fpl.sim")
@@ -806,6 +807,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    ensure_printable_console()
     args = parse_args(argv)
     # Progress at the requested level; the pipeline modules it drives log a
     # line per solve and per model, so they only speak up for warnings.

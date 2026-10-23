@@ -93,6 +93,7 @@ from fpl_optimizer import (
     SquadOptimizer,
     aggregate_double_gameweeks,
     check_feasibility,
+    ensure_printable_console,
     formation_string,
     load_models,
     prepare_matrix,
@@ -1050,6 +1051,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    ensure_printable_console()
     args = parse_args(argv)
     logging.basicConfig(
         level=getattr(logging, args.log_level),
