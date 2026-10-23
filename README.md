@@ -1,6 +1,6 @@
 # FPL Machine Learning Pipeline
 
-[![Version](https://img.shields.io/badge/version-v2.0-success)](#roadmap--v3)
+[![tests](https://github.com/VedantMahadik-qc/fpl_ml_pipeline/actions/workflows/tests.yml/badge.svg)](https://github.com/VedantMahadik-qc/fpl_ml_pipeline/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![XGBoost](https://img.shields.io/badge/XGBoost-2.0%2B-EC3C24?logo=xgboost&logoColor=white)](https://xgboost.readthedocs.io/)
 [![PuLP](https://img.shields.io/badge/PuLP-MILP%20%2F%20CBC-1f6feb)](https://coin-or.github.io/pulp/)
@@ -373,8 +373,8 @@ MID respectively.
 ## Setup
 
 ```bash
-git clone https://github.com/<your-username>/fpl-ml-pipeline.git
-cd fpl-ml-pipeline
+git clone https://github.com/VedantMahadik-qc/fpl_ml_pipeline.git
+cd fpl_ml_pipeline
 
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
@@ -608,8 +608,6 @@ should do more for real accuracy than any further feature work.
   additional binary decisions in the multi-period program.
 - **Quantile / distributional forecasts** instead of point estimates, enabling
   risk-adjusted captaincy (a high-variance differential vs a safe floor).
-- **Test suite + CI:** promote the development-time verification scripts into
-  `pytest` and run them on every push.
 
 ---
 
