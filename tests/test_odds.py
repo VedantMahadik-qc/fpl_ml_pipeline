@@ -52,3 +52,38 @@ def test_masked_copy_blanks_only_odds():
     assert len(out) == 4
     assert out["odds_team_goals"].isna().tolist() == [False, False, True, True]
     assert out["fdr_team_attack"].notna().all()
+
+
+def test_live_long_names_meet_archive_and_bookmaker_names():
+    from fpl_ingest import canonical_club
+    from fpl_odds import team_key
+
+    assert canonical_club("Ipswich Town") == "Ipswich"
+    assert canonical_club("Spurs") == "Spurs"
+    for fpl, bookmaker in (("Ipswich Town", "Ipswich"), ("Coventry City", "Coventry"),
+                           ("Man Utd", "Man United"), ("Spurs", "Tottenham")):
+        assert team_key(fpl) == team_key(bookmaker)
+        assert team_key(canonical_club(fpl)) == team_key(bookmaker)
+
+
+def test_upcoming_odds_attach_by_club_pair():
+    from fpl_odds import attach_upcoming_odds
+
+    table = pd.DataFrame({"home_team": ["Hull"], "away_team": ["Brentford"],
+                          "lambda_home": [1.1], "lambda_away": [1.9],
+                          "p_home": [0.2], "p_away": [0.56]})
+    rows = pd.DataFrame({"team": ["Hull City", "Brentford", "Arsenal"],
+                         "opponent_name": ["Brentford", "Hull City", "Everton"],
+                         "was_home": [True, False, True]})
+    out = attach_upcoming_odds(rows, table)
+    assert out["odds_team_goals"].iloc[:2].tolist() == [1.1, 1.9]
+    assert out["odds_win_prob"].iloc[:2].tolist() == [0.2, 0.56]
+    assert np.isnan(out["odds_team_goals"].iloc[2])     # unpriced fixture stays NaN
+
+
+def test_finished_seasons_are_cached_for_good():
+    from datetime import date
+    from fpl_odds import season_finished
+
+    assert season_finished("2025-26", date(2026, 10, 23))
+    assert not season_finished("2026-27", date(2026, 10, 23))

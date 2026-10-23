@@ -302,6 +302,10 @@ def build_horizon_projections(config: TransferConfig) -> pd.DataFrame:
     # derive_fdr_matchups().
     ratings = latest_team_ratings(build_team_match_table(history),
                                   config.team_rating_window)
+    # One download for the whole horizon. The feed only prices the coming round,
+    # so later gameweeks mostly score on the odds-free fallback, as in training.
+    from fpl_odds import fetch_upcoming_odds
+    odds_table = fetch_upcoming_odds()
     LOGGER.info("Forward team ratings built once for %d club(s); reused across the horizon.",
                 len(ratings))
 
@@ -314,7 +318,8 @@ def build_horizon_projections(config: TransferConfig) -> pd.DataFrame:
             LOGGER.warning("Stopping horizon at GW%d: %s", gameweek, exc)
             break
 
-        matrix = assemble_feature_matrix(rows, history, needed, live_config, ratings)
+        matrix = assemble_feature_matrix(rows, history, needed, live_config, ratings,
+                                         odds_table)
         _assert_fdr_present(matrix, gameweek)
         scored = predict_points(matrix, bundles)
         collapsed = collapse_to_players(scored)

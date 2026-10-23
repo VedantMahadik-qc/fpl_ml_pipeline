@@ -383,10 +383,47 @@ def finalise(frame: pd.DataFrame) -> pd.DataFrame:
 # Live ingestion — transform layer (pure functions, no network)
 # --------------------------------------------------------------------------- #
 
+# Long club names mapped to the short form the archive has always used. The
+# live API switched to "Ipswich Town", "Coventry City" and friends in 2026-27;
+# team ratings carry across seasons by club NAME, so without this one club
+# becomes two the moment its name changes.
+CLUB_NAME_ALIASES: Dict[str, str] = {
+    "AFC Bournemouth": "Bournemouth",
+    "Brighton & Hove Albion": "Brighton",
+    "Cardiff City": "Cardiff",
+    "Coventry City": "Coventry",
+    "Hull City": "Hull",
+    "Ipswich Town": "Ipswich",
+    "Leeds United": "Leeds",
+    "Leicester City": "Leicester",
+    "Luton Town": "Luton",
+    "Manchester City": "Man City",
+    "Manchester United": "Man Utd",
+    "Newcastle United": "Newcastle",
+    "Norwich City": "Norwich",
+    "Nottingham Forest": "Nott'm Forest",
+    "Sheffield United": "Sheffield Utd",
+    "Stoke City": "Stoke",
+    "Swansea City": "Swansea",
+    "Tottenham Hotspur": "Spurs",
+    "West Bromwich Albion": "West Brom",
+    "West Ham United": "West Ham",
+    "Wolverhampton Wanderers": "Wolves",
+}
+
+
+def canonical_club(name: Any) -> Any:
+    """One name per club across every season and source."""
+    if not isinstance(name, str):
+        return name
+    return CLUB_NAME_ALIASES.get(name.strip(), name.strip())
+
+
 def build_team_lookup(teams: Iterable[Dict[str, Any]]) -> Dict[int, Dict[str, str]]:
     """team_id -> {'name', 'short_name'}. Season-scoped: ids are reused each year."""
     return {
-        int(t["id"]): {"name": t.get("name", "Unknown"), "short_name": t.get("short_name", "UNK")}
+        int(t["id"]): {"name": canonical_club(t.get("name", "Unknown")),
+                       "short_name": t.get("short_name", "UNK")}
         for t in teams
     }
 
@@ -604,7 +641,8 @@ class HistoricalIngestor:
             LOGGER.warning("[%s] teams.csv missing expected columns.", season)
             return {}
         return {
-            int(row.id): {"name": str(row.name_), "short_name": str(row.short_name)}
+            int(row.id): {"name": canonical_club(str(row.name_)),
+                          "short_name": str(row.short_name)}
             for row in frame.rename(columns={"name": "name_"}).itertuples(index=False)
         }
 

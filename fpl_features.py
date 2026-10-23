@@ -202,7 +202,43 @@ def load_history(path: Path) -> pd.DataFrame:
     if missing:
         raise RuntimeError(f"{path} is missing required columns: {sorted(missing)}")
 
+    # Files written before club names were canonicalised can hold both
+    # "Ipswich" and "Ipswich Town"; fold them so team ratings see one club.
+    if "team" in frame.columns:
+        from fpl_ingest import canonical_club
+        frame["team"] = frame["team"].map(canonical_club)
+    frame = repair_club_labels(frame)
+
     LOGGER.info("Loaded %s: %d rows x %d columns", path, len(frame), frame.shape[1])
+    return frame
+
+
+def repair_club_labels(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Give every row the club its player actually played for in that fixture.
+
+    The live API's element-summary history carries no club, so Phase 1 stamps
+    each row with the player's CURRENT club. A summer signing's early matches
+    are therefore filed under his new club ("Man City vs Crystal Palace" in a
+    gameweek City never played Palace), and each one becomes a phantom
+    team-match in the ratings. Everyone on one side of a fixture shares the
+    kickoff, opponent and venue, so the majority club on that side is the
+    right one.
+    """
+    key = ["season", "kickoff_time", "opponent_team_id", "was_home"]
+    if not {"team", *key}.issubset(frame.columns):
+        return frame
+    frame = frame.copy()
+    columns = [c for c in ("team", "team_id") if c in frame.columns]
+    for column in columns:
+        majority = frame.groupby(key, dropna=False)[column].transform(
+            lambda s: s.mode().iat[0] if s.notna().any() else s.iat[0])
+        changed = majority.notna() & (majority != frame[column])
+        if column == "team" and changed.any():
+            LOGGER.info("Relabelled %d row(s) to the club the player was at for that "
+                        "fixture (mid-window transfers): %s", int(changed.sum()),
+                        ", ".join(sorted(frame.loc[changed, "player_name"].unique())[:6]))
+        frame.loc[changed, column] = majority[changed]
     return frame
 
 

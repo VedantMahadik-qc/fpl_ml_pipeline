@@ -46,3 +46,19 @@ def test_rolling_features_per_player_and_causal():
                                [np.nan, np.nan, np.nan, 0.4, np.nan, np.nan, 0.3],
                                equal_nan=True)
     assert out["games_prior"].tolist() == [0, 1, 2, 3, 0, 1, 2]
+
+
+def test_mid_window_transfer_rows_move_back_to_the_old_club():
+    from fpl_features import repair_club_labels
+
+    side = {"season": "2026-27", "kickoff_time": "2026-08-22T14:00:00Z",
+            "opponent_team_id": 8, "was_home": True}
+    frame = pd.DataFrame([
+        {**side, "team": "Spurs", "team_id": 19, "player_name": "A"},
+        {**side, "team": "Spurs", "team_id": 19, "player_name": "B"},
+        {**side, "team": "Man City", "team_id": 15, "player_name": "Signed later"},
+        {**side, "opponent_team_id": 3, "team": "Man City", "team_id": 15, "player_name": "C"},
+    ])
+    out = repair_club_labels(frame)
+    assert out["team"].tolist() == ["Spurs", "Spurs", "Spurs", "Man City"]
+    assert out["team_id"].tolist() == [19, 19, 19, 15]

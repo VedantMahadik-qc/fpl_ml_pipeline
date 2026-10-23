@@ -72,6 +72,7 @@ import pandas as pd
 # an older fpl_train.py (which recorded `__main__.TwoStageModel`) load from any
 # entry point. Keep the import even though the symbol looks unused.
 from fpl_models import TwoStageModel  # noqa: F401
+from fpl_odds import attach_upcoming_odds, fetch_upcoming_odds
 
 # Phase 1 — HTTP client with retries/caching, and the bootstrap decoders.
 from fpl_ingest import (
@@ -125,6 +126,8 @@ class LiveConfig:
     partial_windows: bool = False
     fdr: bool = True                      # build forward fixture-difficulty features
     team_rating_window: int = 10          # team matches per rating; matches Phase 2
+    odds: bool = True                     # next-round bookmaker odds (fpl_odds.py)
+    odds_source: Optional[Path] = None    # saved fixtures.csv instead of the live feed
     exclude: Sequence[str] = ()
     cache_dir: Optional[Path] = None      # None -> always hit the live API
     output_path: Optional[Path] = None
@@ -641,10 +644,21 @@ def assemble_feature_matrix(
     needed: Dict[str, List[int]],
     config: LiveConfig,
     ratings: Optional[pd.DataFrame] = None,
+    odds_table: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """Join live fixture context to recomputed form and forward FDR, then fill gaps."""
+    """
+    Join live fixture context to recomputed form, forward FDR and odds, then fill gaps.
+
+    `odds_table` lets a caller scoring several gameweeks fetch the odds feed once;
+    left as None it is fetched here when `config.odds` is set.
+    """
     fixture_rows = fixture_rows.copy()
     fixture_rows["_name_key"] = fixture_rows["player_name"].map(normalise_name)
+
+    if config.odds:
+        if odds_table is None:
+            odds_table = fetch_upcoming_odds(config.odds_source)
+        fixture_rows = attach_upcoming_odds(fixture_rows, odds_table)
 
     # V2: difficulty of the upcoming fixture, from team ratings through GW N.
     if config.fdr:
@@ -1022,6 +1036,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Skip forward fixture-difficulty features")
     parser.add_argument("--team-rating-window", type=int, default=10,
                         help="Team matches per rating (must match Phase 2)")
+    parser.add_argument("--no-odds", action="store_true",
+                        help="Skip the next-round bookmaker odds feed")
+    parser.add_argument("--odds-csv", default=None,
+                        help="Saved football-data fixtures.csv to read instead of the live feed")
     parser.add_argument("--exclude", default="", help="Comma-separated names to exclude")
     parser.add_argument("--cache-dir", default=None,
                         help="Cache API responses here (default: always live)")
@@ -1052,6 +1070,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         partial_windows=args.partial_windows,
         fdr=not args.no_fdr,
         team_rating_window=args.team_rating_window,
+        odds=not args.no_odds,
+        odds_source=Path(args.odds_csv) if args.odds_csv else None,
         exclude=[n for n in args.exclude.split(",") if n.strip()],
         cache_dir=Path(args.cache_dir) if args.cache_dir else None,
         output_path=Path(args.output) if args.output else None,
