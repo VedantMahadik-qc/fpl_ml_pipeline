@@ -1,0 +1,4 @@
+projector,gameweeks,total_points,mean_points,hits,transfers,auto_subs,captain_points,final_squad_value,seeds,total_std,total_min,total_max,chips
+model,38.0,2039.4666666666667,53.6701754385965,3.466666666666667,61.6,26.8,209.8,97.07333333333334,15.0,35.21133475513383,1975.0,2105.0,
+roll3,38.0,1807.0,47.55263157894737,35.0,72.0,35.0,167.0,101.3,,,,,
+oracle,38.0,4224.0,111.15789473684211,37.0,74.0,0.0,647.0,109.0,,,,,

@@ -21,6 +21,7 @@ fpl_position_medians.json
 !tests/data/*.csv
 # Season-simulation results are small and are the project's headline evidence.
 !sim_results/*.csv
+!sim_results/**/*.csv
 
 # --- API response cache (Phase 1 & 5) ---
 .fpl_cache/

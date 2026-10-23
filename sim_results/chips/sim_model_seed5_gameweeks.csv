@@ -1,0 +1,39 @@
+gameweek,points,gross_points,hits,transfers,free_transfers_after,bank,squad_value,chip,projected_xi,captain,captain_points,auto_subs,transfers_in,transfers_out,total_points
+1,56.0,56.0,0,0,1,0.0,100.0,3xc,48.88440489768982,Mohamed Salah,16.0,3,,,56.0
+2,39.0,39.0,0,1,1,0.5,99.3,,47.30602264404297,Mohamed Salah,5.0,1,Francisco Evanilson de Lima Barbosa,Yoane Wissa,95.0
+3,54.0,54.0,0,1,1,1.3,98.1,,46.12423872947693,Mohamed Salah,3.0,1,Tino Livramento,Joško Gvardiol,149.0
+4,52.0,52.0,0,1,1,0.9,98.5,,46.584813356399536,Mohamed Salah,9.0,1,Antoine Semenyo,Anthony Elanga,201.0
+5,50.0,50.0,0,1,1,0.7,98.5,,46.20235228538513,Mohamed Salah,5.0,1,Matty Cash,Aaron Wan-Bissaka,251.0
+6,40.0,40.0,0,1,1,2.1,97.0,,45.7258563041687,Mohamed Salah,2.0,0,Adrien Truffert,Rayan Aït-Nouri,291.0
+7,55.0,55.0,0,1,1,0.8,98.1,,45.481724977493286,Mohamed Salah,2.0,1,Viktor Gyökeres,Jarrod Bowen,346.0
+8,46.0,50.0,1,2,1,0.4,98.4,,47.01852083206177,Bruno Borges Fernandes,8.0,1,Bruno Borges Fernandes; Omar Alderete,Antoine Semenyo; Tino Livramento,392.0
+9,53.0,53.0,0,1,1,0.9,97.5,,43.94547128677368,Mohamed Salah,6.0,1,Gabriel Gudmundsson,Matty Cash,445.0
+10,51.0,51.0,0,1,1,0.5,97.8,,49.17807459831238,Viktor Gyökeres,7.0,0,Jayden Bogle,Omar Alderete,496.0
+11,47.0,47.0,0,1,1,0.1,98.3,,49.01299071311951,Mohamed Salah,2.0,1,João Pedro Junqueira de Jesus,Francisco Evanilson de Lima Barbosa,543.0
+12,41.0,45.0,1,2,1,0.4,97.9,,47.81818723678589,Mohamed Salah,2.0,0,Igor Thiago Nascimento Rodrigues; Marc Cucurella Saseta,Gabriel Gudmundsson; Viktor Gyökeres,584.0
+13,51.0,51.0,0,1,1,1.2,97.1,,46.92109251022339,Mohamed Salah,13.0,1,Danny Welbeck,João Pedro Junqueira de Jesus,635.0
+14,47.0,47.0,0,1,1,0.4,97.7,,47.492011308670044,Bruno Borges Fernandes,4.0,1,Phil Foden,Morgan Gibbs-White,682.0
+15,76.0,76.0,0,1,1,7.0,91.2,,46.30649423599243,Phil Foden,12.0,0,Cody Gakpo,Mohamed Salah,758.0
+16,82.0,82.0,0,11,2,0.1,98.0,wildcard,50.13136434555054,Phil Foden,11.0,0,Bukayo Saka; Đorđe Petrović; Antoine Semenyo; Jan Paul van Hecke; Joachim Andersen; Matheus Nunes; Nico O'Reilly; Neco Williams; Igor Jesus Maciel da Cruz; Hugo Ekitiké; Aaron Ramsdale,Adrien Truffert; Sepp van den Berg; Bart Verbruggen; Danny Welbeck; Marc Cucurella Saseta; Ismaïla Sarr; Vitalii Mykolenko; Norberto Bercique Gomes Betuncal; Jayden Bogle; Cody Gakpo; Matz Sels,840.0
+17,61.0,61.0,0,2,1,0.0,98.4,bboost,50.92072510719299,Phil Foden,3.0,0,Morgan Gibbs-White; Viktor Gyökeres,Bukayo Saka; Igor Jesus Maciel da Cruz,901.0
+18,33.0,33.0,0,0,2,0.0,98.3,freehit,50.605552434921265,Phil Foden,2.0,0,,,934.0
+19,35.0,35.0,0,2,1,0.1,98.2,,52.15065956115723,Phil Foden,3.0,2,Matheus Santos Carneiro da Cunha; Anthony Gordon,Antoine Semenyo; Bryan Mbeumo,969.0
+20,48.0,48.0,0,1,1,0.1,98.1,,47.03120398521423,Phil Foden,2.0,1,Michael Kayode,Jan Paul van Hecke,1017.0
+21,54.0,54.0,0,1,1,0.1,98.1,,46.176247358322144,Morgan Gibbs-White,9.0,1,Bart Verbruggen,Đorđe Petrović,1071.0
+22,36.0,36.0,0,1,1,0.0,98.1,,44.64870762825012,Phil Foden,1.0,1,Marc Guéhi,Nico O'Reilly,1107.0
+23,55.0,55.0,0,13,2,3.2,94.8,wildcard,49.452404737472534,Morgan Gibbs-White,6.0,1,Declan Rice; Morgan Rogers; Ollie Watkins; Antoine Semenyo; Caoimhín Kelleher; Ferdi Kadıoğlu; Jan Paul van Hecke; Cole Palmer; Pedro Porro Sauceda; Cristian Romero; Konstantinos Mavropanos; José Malheiro de Sá; Mateus Mané,Michael Kayode; Igor Thiago Nascimento Rodrigues; Bart Verbruggen; Marc Guéhi; Joachim Andersen; Matheus Nunes; Phil Foden; Bruno Borges Fernandes; Matheus Santos Carneiro da Cunha; Anthony Gordon; Neco Williams; Hugo Ekitiké; Aaron Ramsdale,1162.0
+24,62.0,62.0,0,2,1,6.1,91.9,,46.50926423072815,Ollie Watkins,7.0,2,Florian Wirtz; Patrick Dorgu,Cole Palmer; Pedro Porro Sauceda,1224.0
+25,64.0,64.0,0,1,1,4.7,93.1,,46.280704975128174,Viktor Gyökeres,12.0,0,Jurriën Timber,Cristian Romero,1288.0
+26,96.0,96.0,0,1,1,4.7,93.2,3xc,66.84280943870544,Declan Rice,28.0,0,Hugo Bueno López,Patrick Dorgu,1384.0
+27,48.0,48.0,0,1,1,1.4,96.5,,48.84549689292908,Cole Palmer,3.0,1,Cole Palmer,Morgan Gibbs-White,1432.0
+28,46.0,46.0,0,1,1,1.8,96.2,,48.10674047470093,Cole Palmer,1.0,2,Virgil van Dijk,Jurriën Timber,1478.0
+29,48.0,48.0,0,1,1,0.1,97.7,,48.9798948764801,Cole Palmer,9.0,0,Bruno Borges Fernandes,Florian Wirtz,1526.0
+30,47.0,51.0,1,2,1,0.6,97.3,,50.44276237487793,Cole Palmer,2.0,0,Adrien Truffert; João Pedro Junqueira de Jesus,Ollie Watkins; Hugo Bueno López,1573.0
+31,60.0,60.0,0,1,1,0.7,97.3,,43.41620445251465,Cole Palmer,2.0,0,Anthony Gordon,Declan Rice,1633.0
+32,58.0,58.0,0,1,1,0.4,97.4,,47.36927509307861,Cole Palmer,4.0,0,Bart Verbruggen,José Malheiro de Sá,1691.0
+33,100.0,100.0,0,0,2,0.4,97.2,freehit,84.78923344612122,Cole Palmer,2.0,0,,,1791.0
+34,29.0,29.0,0,2,1,0.6,97.0,,39.02800536155701,Viktor Gyökeres,1.0,0,Gabriel dos Santos Magalhães; Norberto Bercique Gomes Betuncal,Adrien Truffert; João Pedro Junqueira de Jesus,1820.0
+35,56.0,56.0,0,1,1,1.4,96.4,bboost,41.7549512386322,Bruno Borges Fernandes,5.0,0,Rayan Cherki,Anthony Gordon,1876.0
+36,72.0,72.0,0,1,1,0.5,96.9,,58.4001042842865,Antoine Semenyo,12.0,0,Nico O'Reilly,Konstantinos Mavropanos,1948.0
+37,56.0,56.0,0,1,1,0.3,97.3,,46.12601065635681,Viktor Gyökeres,1.0,0,William Saliba,Virgil van Dijk,2004.0
+38,48.0,48.0,0,1,1,1.5,95.9,,44.2790412902832,Viktor Gyökeres,1.0,2,Marcus Tavernier,Rayan Cherki,2052.0

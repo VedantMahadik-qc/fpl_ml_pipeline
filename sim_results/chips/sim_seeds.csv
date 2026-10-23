@@ -1,0 +1,16 @@
+seed,gameweeks,total_points,mean_points,hits,transfers,auto_subs,captain_points,final_squad_value,chips
+1,38,2062.0,54.26315789473684,4,61,27,205.0,97.10000000000001,3xc GW4; wildcard GW16; bboost GW17; freehit GW18; 3xc GW21; wildcard GW25; bboost GW26; freehit GW33
+2,38,2027.0,53.3421052631579,6,63,21,182.0,97.2,3xc GW4; wildcard GW16; bboost GW17; freehit GW18; 3xc GW20; freehit GW33; wildcard GW35; bboost GW36
+3,38,1991.0,52.39473684210526,6,58,23,213.0,97.0,3xc GW4; wildcard GW16; bboost GW17; freehit GW18; 3xc GW21; freehit GW33; wildcard GW35; bboost GW36
+4,38,2040.0,53.68421052631579,3,63,33,211.0,96.3,bboost GW1; 3xc GW4; freehit GW16; wildcard GW17; 3xc GW20; wildcard GW25; bboost GW26; freehit GW33
+5,38,2052.0,54.0,3,64,26,223.0,97.4,3xc GW1; wildcard GW16; bboost GW17; freehit GW18; wildcard GW23; 3xc GW26; freehit GW33; bboost GW35
+6,38,1995.0,52.5,2,60,21,195.0,97.19999999999999,bboost GW1; 3xc GW4; freehit GW16; wildcard GW17; 3xc GW20; wildcard GW25; bboost GW26; freehit GW33
+7,38,2089.0,54.973684210526315,2,60,25,210.0,97.7,3xc GW2; freehit GW16; wildcard GW17; bboost GW18; 3xc GW20; wildcard GW25; freehit GW33; bboost GW35
+8,38,2033.0,53.5,0,55,28,199.0,97.4,3xc GW4; wildcard GW16; bboost GW17; freehit GW18; 3xc GW26; freehit GW33; wildcard GW35; bboost GW36
+9,38,2057.0,54.13157894736842,5,64,29,232.0,97.5,3xc GW4; freehit GW16; wildcard GW17; bboost GW18; 3xc GW20; wildcard GW25; bboost GW26; freehit GW33
+10,38,2046.0,53.8421052631579,3,61,30,239.0,96.80000000000001,3xc GW1; wildcard GW16; bboost GW17; freehit GW18; 3xc GW20; freehit GW33; wildcard GW35; bboost GW36
+11,38,2105.0,55.39473684210526,4,63,30,207.0,97.5,3xc GW4; freehit GW16; wildcard GW17; bboost GW19; 3xc GW20; wildcard GW23; freehit GW33; bboost GW35
+12,38,1975.0,51.973684210526315,6,65,25,225.0,96.5,3xc GW4; freehit GW16; wildcard GW17; bboost GW18; 3xc GW20; wildcard GW24; freehit GW33; bboost GW35
+13,38,2057.0,54.13157894736842,2,59,28,197.0,97.0,3xc GW4; wildcard GW16; bboost GW17; freehit GW18; 3xc GW26; freehit GW33; wildcard GW35; bboost GW36
+14,38,2047.0,53.86842105263158,3,65,25,211.0,97.0,bboost GW1; 3xc GW4; wildcard GW15; freehit GW16; 3xc GW20; wildcard GW23; bboost GW26; freehit GW33
+15,38,2016.0,53.05263157894737,3,63,31,198.0,96.5,3xc GW4; wildcard GW16; bboost GW17; freehit GW18; 3xc GW20; wildcard GW25; bboost GW26; freehit GW33
