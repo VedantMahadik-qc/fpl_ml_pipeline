@@ -115,6 +115,10 @@ PRE_DEADLINE_FEATURES: List[str] = ["gw_cost", "was_home", "games_prior", "is_co
 # up by prefix; the `*_roll_<n>` variants are caught by the rolling allowlist.
 FDR_PREFIX: str = "fdr_"
 
+# Bookmaker odds for the upcoming fixture (fpl_odds.py). Pre-deadline knowns,
+# but only for the NEXT round: see `with_odds_masked`.
+ODDS_PREFIX: str = "odds_"
+
 # Only knowable after the fixture is played. Never features.
 POST_MATCH_COLUMNS: set = {
     "total_points", "minutes", "starts", "goals_scored", "assists", "clean_sheets",
@@ -146,6 +150,7 @@ class TrainConfig:
     permutation_repeats: int = 5
     permutation_sample: int = 5000
     random_state: int = 42
+    odds_dropout: bool = True         # also train on an odds-masked copy of each row
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -205,9 +210,15 @@ def select_feature_columns(frame: pd.DataFrame, position_columns: Sequence[str])
     else:
         LOGGER.warning("No `fdr_*` columns — run Phase 2 with --strength-source derived.")
 
-    features = rolling + pre_deadline + fdr + list(position_columns)
-    LOGGER.info("Feature matrix: %d columns (%d rolling, %d pre-deadline, %d FDR, %d position).",
-                len(features), len(rolling), len(pre_deadline), len(fdr), len(position_columns))
+    odds = sorted(c for c in frame.columns
+                  if c.startswith(ODDS_PREFIX) and frame[c].notna().any())
+    if odds:
+        LOGGER.info("Odds features found: %s", ", ".join(odds))
+
+    features = rolling + pre_deadline + fdr + odds + list(position_columns)
+    LOGGER.info("Feature matrix: %d columns (%d rolling, %d pre-deadline, %d FDR, %d odds, "
+                "%d position).", len(features), len(rolling), len(pre_deadline), len(fdr),
+                len(odds), len(position_columns))
     return features
 
 
@@ -562,6 +573,24 @@ def plot_importance(frame: pd.DataFrame, position: str, stage: str,
 # Per-position training
 # --------------------------------------------------------------------------- #
 
+def with_odds_masked(frame: pd.DataFrame, features: Sequence[str]) -> pd.DataFrame:
+    """
+    Append a copy of every row with the odds features blanked out.
+
+    Odds are only published for the next round. A model that has only ever
+    seen them present would be scoring an unfamiliar input whenever they are
+    missing: GW t+2 in a multi-week plan, or a live run without an odds feed.
+    Training on both copies teaches XGBoost's missing-value branches to fall
+    back on the FDR features, while rows with odds still use them.
+    """
+    odds = [c for c in features if c.startswith(ODDS_PREFIX)]
+    if not odds or frame.empty:
+        return frame
+    masked = frame.copy()
+    masked[odds] = np.nan
+    return pd.concat([frame, masked], ignore_index=True)
+
+
 def train_position_model(position: str, train: pd.DataFrame, test: pd.DataFrame,
                          features: Sequence[str], config: TrainConfig) -> Optional[Dict[str, Any]]:
     """Train both stages for one position, evaluate the product, package it."""
@@ -586,6 +615,8 @@ def train_position_model(position: str, train: pd.DataFrame, test: pd.DataFrame,
     if len(active) < len(features):
         LOGGER.info("  using %d/%d features (%d constant within this position)",
                     len(active), len(features), len(features) - len(active))
+    if config.odds_dropout:
+        fit_df, valid_df = with_odds_masked(fit_df, active), with_odds_masked(valid_df, active)
 
     X_fit, X_valid = prepare_matrix(fit_df, active), prepare_matrix(valid_df, active)
     X_test = prepare_matrix(test_pos, active)
@@ -832,6 +863,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-depth", type=int, default=5)
     parser.add_argument("--permutation-repeats", type=int, default=5)
     parser.add_argument("--random-state", type=int, default=42)
+    parser.add_argument("--no-odds-dropout", action="store_true",
+                        help="Train only on rows as they are, without the odds-masked copy")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args(argv)
@@ -849,6 +882,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         min_games_prior=args.min_games_prior, n_estimators=args.n_estimators,
         learning_rate=args.learning_rate, max_depth=args.max_depth,
         permutation_repeats=args.permutation_repeats, random_state=args.random_state,
+        odds_dropout=not args.no_odds_dropout,
     )
 
     try:

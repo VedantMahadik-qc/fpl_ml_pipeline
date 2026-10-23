@@ -11,6 +11,7 @@ Pipeline
   2. Benchwarmers adjustments       — expected_assists x 1.4
                                       clean_sheet_probability = exp(-xGC),
                                       appearances only (NaN on 0 minutes)
+     + fixture difficulty and bookmaker odds for the fixture itself
   3. Sort + group by player         — chronological, one series per player.
   4. Rolling means (3/5/10)         — every window is .shift(1)'d, so gameweek N
                                       sees only N-1 and older. Never N itself.
@@ -175,6 +176,8 @@ class FeatureConfig:
     team_rating_window: int = TEAM_RATING_WINDOW
     strength_csv: Optional[Path] = None
     fetch_strength: bool = True
+    # --- bookmaker odds (fpl_odds.py) ---
+    odds: bool = True
     metadata: Dict[str, object] = field(default_factory=dict)
 
 
@@ -1053,6 +1056,13 @@ def build_features(config: FeatureConfig) -> pd.DataFrame:
     #     metrics in ROLLING_METRICS exist by the time windows are built.
     frame = add_fixture_difficulty(frame, config)
 
+    # 2c. Bookmaker odds for THIS fixture. Pre-deadline knowns, like the base
+    #     FDR columns, so they are attached as-is and never rolled.
+    if config.odds:
+        from fpl_odds import attach_odds, build_odds_table
+        table = build_odds_table(sorted(frame["season"].dropna().unique()))
+        frame = attach_odds(frame, table)
+
     frame = flag_observed_metrics(frame, config.metrics)
     report_absent_metrics(frame, config.metrics)
 
@@ -1142,6 +1152,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Pre-fetched FPL strength table (season,short_name,strength_*)")
     parser.add_argument("--no-fetch-strength", action="store_true",
                         help="Never hit the network for the FPL strength table")
+    parser.add_argument("--no-odds", action="store_true",
+                        help="Skip the bookmaker odds features (fpl_odds.py)")
     parser.add_argument("--no-verify", action="store_true", help="Skip the leakage assertion")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -1172,6 +1184,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         team_rating_window=args.team_rating_window,
         strength_csv=Path(args.strength_csv) if args.strength_csv else None,
         fetch_strength=not args.no_fetch_strength,
+        odds=not args.no_odds,
     )
 
     try:

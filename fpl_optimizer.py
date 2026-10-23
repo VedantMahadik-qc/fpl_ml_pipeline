@@ -291,8 +291,15 @@ def prepare_matrix(frame: pd.DataFrame, features: Sequence[str]) -> pd.DataFrame
         else:
             matrix[column] = np.nan
             missing.append(column)
-    if missing:
-        LOGGER.warning("Feature(s) absent at inference, passed as NaN: %s", ", ".join(missing))
+    # Odds only exist for the next round and have no live feed yet; the models
+    # are trained on an odds-masked copy, so NaN here is an expected input.
+    odds = [c for c in missing if c.startswith("odds_")]
+    others = [c for c in missing if c not in odds]
+    if odds:
+        LOGGER.info("No bookmaker odds for these fixtures; scoring on the odds-free "
+                    "fallback (%d column(s)).", len(odds))
+    if others:
+        LOGGER.warning("Feature(s) absent at inference, passed as NaN: %s", ", ".join(others))
     return matrix
 
 
