@@ -256,7 +256,20 @@ Bridges the gap between backtesting and acting:
    *inclusive* of the most recent one.
 4. **Builds forward FDR** for the upcoming opponent via `latest_team_ratings()`,
    sharing `derive_fdr_matchups()` with Phase 2 so the arithmetic cannot drift.
-5. Scores with the Phase 3 models and hands the frame to `SquadOptimizer`.
+5. **Attaches next-round odds** from football-data's
+   [upcoming-fixtures feed](https://www.football-data.co.uk/fixtures.csv),
+   matched by home/away club pair. Fixtures the feed does not list, and every
+   gameweek after the next in `fpl_transfers.py`, score on the odds-free
+   fallback the models were trained for. `--no-odds` skips the feed;
+   `--odds-csv` reads a saved copy.
+6. Scores with the Phase 3 models and hands the frame to `SquadOptimizer`.
+
+> [!IMPORTANT]
+> **Live picks are only as fresh as Phase 1.** Form is recomputed from
+> `fpl_ml_features.csv`, so a squad built from a feature file that predates the
+> latest gameweek judges everyone on stale form, and summer signings have no
+> history at all. Re-run Phases 1–3 before each deadline (see
+> [Weekly live run](#weekly-live-run)).
 
 > [!NOTE]
 > **Forward features are recomputed, not copied.** Reusing the rolling values on
@@ -401,6 +414,31 @@ python fpl_season_sim.py
 pip install -r requirements-dev.txt && pytest
 ```
 
+### Weekly live run
+
+Phase 1's response cache never expires, which makes reruns after a failure cheap
+but means a second ingest in the same cache directory replays old responses.
+Point each week's run at a fresh directory:
+
+```bash
+# ~6 min: archive seasons plus every played gameweek of the live season
+python fpl_ingest.py --seasons 2023-24 2024-25 2025-26 --cache-dir .fpl_cache/$(date +%F)
+
+python fpl_features.py
+# Train on every completed season; the live season so far is the test set
+python fpl_train.py --train-seasons 2023-24 2024-25 2025-26 --test-season 2026-27
+
+python fpl_transfers.py --team-id <your FPL id> --horizon 4   # plan for your squad
+python fpl_live_inference.py --bench-weight 0.1               # or a fresh 15
+```
+
+Two live-season quirks are repaired on the way in. The live API names some
+clubs differently from the archive ("Ipswich Town" vs "Ipswich"); both map to
+one canonical name so team ratings do not split a club. And element-summary
+history carries no club, so a summer signing's early matches arrive filed under
+his new club; Phase 2 moves each row to the club everyone else on that side of
+the fixture played for.
+
 ### Common variations
 
 ```bash
@@ -529,9 +567,10 @@ Documented because they are real, not because they are hypothetical.
   the column constant within each position; Phase 3's zero-variance filter then
   drops it. For defenders and keepers that is the single largest available
   signal currently going unused.
-- **Position medians are fitted over the whole file.** A 2023-24 row is filled
-  from a median that saw 2025-26 data. Mild, but real, for strict backtests —
-  fit the imputer on your training slice and reuse the JSON.
+- **Position medians are fitted over the whole file by default.** A 2023-24 row
+  is filled from a median that saw 2025-26 data. Mild, but real, for strict
+  backtests — pass `--fit-seasons` to fit on the training slice only, as the
+  season simulator does.
 - **Team ratings are venue-agnostic.** One attack and one defence rating per
   club; the home/away effect is left to interact with `was_home` rather than
   being modelled with separate splits.
