@@ -1,0 +1,39 @@
+gameweek,points,gross_points,hits,transfers,free_transfers_after,bank,squad_value,projected_xi,captain,captain_points,auto_subs,transfers_in,transfers_out,total_points
+1,46.0,46.0,0,0,1,0.0,100.0,45.76533818244934,Mohamed Salah,8.0,1,,,46.0
+2,43.0,43.0,0,1,1,0.5,99.3,47.30153846740723,Mohamed Salah,5.0,2,Ismaïla Sarr,Anthony Elanga,89.0
+3,60.0,60.0,0,1,1,1.4,98.2,46.152535915374756,Mohamed Salah,3.0,0,Dan Burn,Joško Gvardiol,149.0
+4,50.0,50.0,0,1,1,0.2,99.4,47.03145146369934,Mohamed Salah,9.0,2,Viktor Gyökeres,Jarrod Bowen,199.0
+5,43.0,43.0,0,1,1,0.1,99.5,47.53549575805664,Mohamed Salah,5.0,1,Antoine Semenyo,Eberechi Eze,242.0
+6,43.0,43.0,0,1,1,0.3,99.2,46.24462580680847,Antoine Semenyo,7.0,0,Marcos Senesi Barón,Illia Zabarnyi,285.0
+7,55.0,55.0,0,1,1,1.7,97.5,47.208829164505005,Viktor Gyökeres,2.0,0,Matty Cash,Marc Cucurella Saseta,340.0
+8,49.0,49.0,0,1,1,0.1,99.3,47.75656867027283,Bruno Borges Fernandes,8.0,1,Bruno Borges Fernandes,Morgan Gibbs-White,389.0
+9,63.0,63.0,0,1,1,0.4,98.7,46.53151226043701,Mohamed Salah,6.0,1,Gabriel Gudmundsson,Aaron Wan-Bissaka,452.0
+10,45.0,45.0,0,1,1,1.2,98.0,48.67598104476929,Viktor Gyökeres,7.0,0,Igor Thiago Nascimento Rodrigues,Francisco Evanilson de Lima Barbosa,497.0
+11,48.0,48.0,0,1,1,0.5,98.8,50.93521547317505,Antoine Semenyo,0.0,1,Morgan Gibbs-White,Ismaïla Sarr,545.0
+12,36.0,36.0,0,1,1,0.0,99.2,48.3356831073761,Mohamed Salah,2.0,2,Lucas Digne,Gabriel Gudmundsson,581.0
+13,59.0,63.0,1,2,1,2.2,97.0,47.638983964920044,Mohamed Salah,13.0,1,Danny Welbeck; Eberechi Eze,Antoine Semenyo; Viktor Gyökeres,640.0
+14,29.0,29.0,0,1,1,2.3,96.8,47.70917201042175,Bruno Borges Fernandes,4.0,1,Malick Thiaw,Dan Burn,669.0
+15,71.0,71.0,0,1,1,1.6,97.6,48.39539551734924,Phil Foden,12.0,1,Phil Foden,Eberechi Eze,740.0
+16,62.0,62.0,0,1,1,5.4,93.9,48.79694366455078,Phil Foden,11.0,1,Bukayo Saka,Mohamed Salah,802.0
+17,48.0,48.0,0,1,1,3.2,96.2,47.38446807861328,Phil Foden,3.0,2,Hugo Ekitiké,Danny Welbeck,850.0
+18,32.0,32.0,0,1,1,3.2,96.0,44.7789568901062,Phil Foden,2.0,2,Matheus Santos Carneiro da Cunha,Bryan Mbeumo,882.0
+19,29.0,29.0,0,1,1,3.0,96.2,48.51386260986328,Phil Foden,3.0,1,Neco Williams,Lucas Digne,911.0
+20,68.0,72.0,1,2,1,4.6,94.6,48.383140563964844,Bukayo Saka,4.0,1,Michael Kayode; Anthony Gordon,Sepp van den Berg; Bruno Borges Fernandes,979.0
+21,59.0,59.0,0,1,1,0.8,98.5,48.95934295654297,Morgan Gibbs-White,9.0,0,Ollie Watkins,Lyle Foster,1038.0
+22,28.0,28.0,0,1,1,0.5,98.6,45.36144256591797,Marc Guéhi,1.0,1,Marc Guéhi,Malick Thiaw,1066.0
+23,53.0,53.0,0,1,1,0.7,98.3,45.72418928146362,Morgan Gibbs-White,6.0,0,Florian Wirtz,Phil Foden,1119.0
+24,69.0,69.0,0,1,1,0.6,98.1,42.07542276382446,Morgan Gibbs-White,8.0,2,Declan Rice,Anthony Gordon,1188.0
+25,29.0,33.0,1,2,1,0.0,98.6,43.782026529312134,Ollie Watkins,2.0,1,Gabriel dos Santos Magalhães; Mateus Mané,Michael Kayode; Igor Thiago Nascimento Rodrigues,1217.0
+26,74.0,74.0,0,1,1,0.9,97.7,62.779595375061035,Declan Rice,14.0,0,Hugo Bueno López,Marc Guéhi,1291.0
+27,39.0,39.0,0,1,1,0.1,98.4,47.70537614822388,Cole Palmer,3.0,1,Cole Palmer,Bukayo Saka,1330.0
+28,55.0,59.0,1,2,1,0.6,97.9,47.06787347793579,Cole Palmer,1.0,0,Morgan Rogers; Antoine Semenyo,Florian Wirtz; Matheus Santos Carneiro da Cunha,1385.0
+29,72.0,72.0,0,1,1,0.7,97.7,47.53779721260071,Cole Palmer,9.0,0,Adrien Truffert,Matty Cash,1457.0
+30,53.0,53.0,0,0,2,0.7,97.6,49.384745597839355,Cole Palmer,2.0,0,,,1510.0
+31,66.0,66.0,0,2,1,0.6,97.7,43.54659128189087,Cole Palmer,2.0,0,Ferdi Kadıoğlu; Bruno Borges Fernandes,Gabriel dos Santos Magalhães; Declan Rice,1576.0
+32,58.0,58.0,0,1,1,0.8,97.3,46.64914298057556,Cole Palmer,4.0,0,Viktor Gyökeres,Hugo Ekitiké,1634.0
+33,90.0,90.0,0,0,2,0.8,97.2,69.252854347229,Cole Palmer,2.0,0,,,1724.0
+34,49.0,49.0,0,2,1,0.3,98.0,40.750699520111084,Viktor Gyökeres,1.0,0,Tyrick Mitchell; Pedro Porro Sauceda,Marcos Senesi Barón; Adrien Truffert,1773.0
+35,34.0,34.0,0,1,1,0.2,98.3,45.84869360923767,Cole Palmer,0.0,0,Nico O'Reilly,Pedro Porro Sauceda,1807.0
+36,70.0,70.0,0,1,1,3.9,94.3,61.97166633605957,Antoine Semenyo,12.0,1,Rayan Cherki,Cole Palmer,1877.0
+37,60.0,60.0,0,1,1,2.7,95.5,46.31529235839844,Viktor Gyökeres,1.0,0,William Saliba,Tyrick Mitchell,1937.0
+38,47.0,47.0,0,1,1,2.7,95.2,44.146774768829346,Viktor Gyökeres,1.0,3,Cole Palmer,Bruno Borges Fernandes,1984.0

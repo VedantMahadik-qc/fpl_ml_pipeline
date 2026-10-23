@@ -59,26 +59,32 @@ those seasons too.
 ![Cumulative points, 2025-26](sim_results/sim_cumulative_points.png)
 
 A single replay is noisy: a small change in projections sends the squad down a
-different path, and the difference compounds over 38 weeks. So the model is run
-under five XGBoost seeds and reported as a spread. The baselines are
-deterministic.
+different path, and the difference compounds over 38 weeks. So every model is
+replayed under 15 XGBoost seeds and reported as mean ± standard deviation. The
+baselines are deterministic.
 
-| Forecasts fed to the solver | Points (5 seeds) | Worst seed | Before hits | Hits |
-| --- | ---: | ---: | ---: | ---: |
-| Two-stage model, with bookmaker odds | **1,957 ± 26** | 1,933 | 1,981 | 6 |
-| Two-stage model, without odds | 1,912 ± 97 | 1,763 | — | 6 |
-| 3-GW rolling average (baseline) | 1,807 | — | 1,947 | 35 |
-| Actual points, with hindsight (ceiling) | 4,224 | — | 4,372 | 37 |
+| Forecasts fed to the solver | Points (15 seeds) | 95% CI | Worst seed | Before hits | Hits |
+| --- | ---: | :---: | ---: | ---: | ---: |
+| Two-stage model, with bookmaker odds | **1,958 ± 30** | 1,941–1,974 | 1,905 | 1,979 | 5 |
+| Two-stage model, without odds | 1,921 ± 72 | 1,881–1,960 | 1,763 | 1,947 | 7 |
+| Two-stage model with odds, 5-seed ensemble | 1,933 ± 51 | 1,905–1,961 | 1,817 | 1,950 | 4 |
+| 3-GW rolling average (baseline) | 1,807 | — | — | 1,947 | 35 |
+| Actual points, with hindsight (ceiling) | 4,224 | — | — | 4,372 | 37 |
 
 How to read this honestly:
 
-- **The model beats the baseline in all five seeds**, by 150 points on average.
-  Without odds it does so in four of five, and its worst seed loses.
-- **Odds mostly buy reliability.** Their mean gain (+45) is inside the noise; the
-  spread shrinking from ±97 to ±26 is the clearer effect.
+- **The model beats the baseline in all 15 seeds**, by 151 points on average.
+  Without odds it does so in 14 of 15.
+- **Odds buy reliability more than points.** The spread shrinking from ±72 to
+  ±30 is significant (Levene p = 0.01); the +37 mean gain is not (Welch
+  p = 0.08).
 - **Most of the edge over the baseline is discipline, not picks.** Before hits
-  the gap is 34 points. The baseline chases noisy 3-week form into 35 hits; the
-  model takes about 6.
+  the gap is 32 points. The baseline chases noisy 3-week form into 35 hits; the
+  model takes about 5.
+- **Averaging models does not help.** A 5-seed ensemble scores no better and
+  spreads no less, which says the run-to-run spread is the season's path
+  dependence, not model noise. Five-run estimates of that spread were off by up
+  to 2x, which is why the table uses 15.
 - **About 51 points a gameweek with no chips and no team news.** Real managers
   have two of each chip and read press conferences. Without the 2025-26 average
   manager score per gameweek (the FPL API only serves the current season) there
@@ -89,12 +95,14 @@ How to read this honestly:
   injuries are only seen through recent minutes; odds are used for the next
   gameweek only, because later rounds are not priced at the deadline.
 
-Reproduce (about ten minutes for five seeds):
+Reproduce (about two minutes per seed, so roughly half an hour for 15; each
+seed is independent, so runs can be split across processes):
 
 ```bash
-python fpl_season_sim.py --seeds 1 2 3 4 5             # writes sim_results/
-python fpl_season_sim.py --seeds 1 2 3 4 5 --no-odds   # the ablation row
-python fpl_season_sim.py --retrain-every 4             # walk-forward retraining
+python fpl_season_sim.py --seeds $(seq 1 15)                  # writes sim_results/
+python fpl_season_sim.py --seeds $(seq 1 15) --no-odds        # ablation row
+python fpl_season_sim.py --seeds $(seq 1 15) --ensemble 5     # ensemble row
+python fpl_season_sim.py --retrain-every 4                    # walk-forward retraining
 ```
 
 ---

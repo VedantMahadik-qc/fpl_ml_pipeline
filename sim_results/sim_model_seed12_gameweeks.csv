@@ -1,0 +1,39 @@
+gameweek,points,gross_points,hits,transfers,free_transfers_after,bank,squad_value,projected_xi,captain,captain_points,auto_subs,transfers_in,transfers_out,total_points
+1,53.0,53.0,0,0,1,0.0,100.0,50.22845387458801,Mohamed Salah,8.0,2,,,53.0
+2,34.0,34.0,0,1,1,0.5,99.3,48.313873529434204,Mohamed Salah,5.0,1,Ismaïla Sarr,Anthony Elanga,87.0
+3,55.0,55.0,0,1,1,1.3,98.1,46.86045742034912,Mohamed Salah,3.0,1,Tino Livramento,Joško Gvardiol,142.0
+4,46.0,46.0,0,1,1,0.1,99.3,50.06409001350403,Mohamed Salah,9.0,1,Viktor Gyökeres,Jarrod Bowen,188.0
+5,37.0,37.0,0,1,1,0.0,99.3,46.78619837760925,Mohamed Salah,5.0,2,Antoine Semenyo,Eberechi Eze,225.0
+6,31.0,31.0,0,1,1,1.4,97.8,47.33941173553467,Mohamed Salah,2.0,0,Adrien Truffert,Rayan Aït-Nouri,256.0
+7,70.0,70.0,0,1,1,2.8,96.1,49.91879224777222,Antoine Semenyo,18.0,1,Matty Cash,Marc Cucurella Saseta,326.0
+8,43.0,43.0,0,1,1,0.3,98.5,49.480921268463135,Bruno Borges Fernandes,8.0,2,Bruno Borges Fernandes,Ismaïla Sarr,369.0
+9,67.0,67.0,0,1,1,1.1,97.3,45.07355189323425,Mohamed Salah,6.0,0,Iliman Ndiaye,Morgan Gibbs-White,436.0
+10,48.0,48.0,0,1,1,1.5,96.7,50.66184902191162,Viktor Gyökeres,7.0,0,Jayden Bogle,Tino Livramento,484.0
+11,47.0,47.0,0,1,1,0.3,97.9,50.79620051383972,Mohamed Salah,2.0,1,Igor Thiago Nascimento Rodrigues,Lyle Foster,531.0
+12,40.0,44.0,1,2,1,0.1,98.1,54.619046688079834,Mohamed Salah,2.0,2,Marc Cucurella Saseta; Morgan Gibbs-White,Bruno Borges Fernandes; Aaron Wan-Bissaka,571.0
+13,39.0,39.0,0,1,1,0.1,98.0,46.62253403663635,Mohamed Salah,2.0,1,Eberechi Eze,Antoine Semenyo,610.0
+14,31.0,35.0,1,2,1,3.7,94.3,46.53504776954651,Bruno Borges Fernandes,4.0,0,Bruno Borges Fernandes; Alexander Isak,Mohamed Salah; Viktor Gyökeres,641.0
+15,85.0,85.0,0,1,1,1.8,96.1,47.68450045585632,Bruno Borges Fernandes,18.0,0,Phil Foden,Iliman Ndiaye,726.0
+16,57.0,57.0,0,1,1,1.5,96.6,49.837114334106445,Phil Foden,11.0,1,Nico O'Reilly,Vitalii Mykolenko,783.0
+17,47.0,47.0,0,1,1,3.0,95.3,48.651893615722656,Phil Foden,3.0,3,Viktor Gyökeres,Alexander Isak,830.0
+18,23.0,23.0,0,1,1,2.6,95.3,48.63827633857727,Viktor Gyökeres,2.0,2,Matheus Santos Carneiro da Cunha,Eberechi Eze,853.0
+19,30.0,30.0,0,1,1,0.3,97.6,50.9132125377655,Bukayo Saka,6.0,2,Bukayo Saka,Bryan Mbeumo,883.0
+20,66.0,70.0,1,2,1,1.0,96.9,49.86870288848877,Bukayo Saka,4.0,1,Nathan Collins; Keane Lewis-Potter,Marc Cucurella Saseta; Jayden Bogle,949.0
+21,65.0,65.0,0,1,1,1.8,96.1,47.80827856063843,Morgan Gibbs-White,9.0,0,Florian Wirtz,Bruno Borges Fernandes,1014.0
+22,32.0,32.0,0,1,1,1.7,95.9,47.1861298084259,Marc Guéhi,1.0,1,Marc Guéhi,Nico O'Reilly,1046.0
+23,43.0,43.0,0,1,1,2.2,95.3,46.90309810638428,Morgan Gibbs-White,6.0,0,Mateus Mané,Norberto Bercique Gomes Betuncal,1089.0
+24,74.0,74.0,0,1,1,1.1,96.2,45.32412028312683,Bruno Borges Fernandes,10.0,1,Bruno Borges Fernandes,Phil Foden,1163.0
+25,62.0,62.0,0,1,1,0.0,97.2,46.13199186325073,Viktor Gyökeres,12.0,1,William Saliba,Keane Lewis-Potter,1225.0
+26,51.0,51.0,0,1,1,0.6,96.8,64.14112663269043,Viktor Gyökeres,3.0,0,Hugo Bueno López,Nathan Collins,1276.0
+27,44.0,48.0,1,2,1,0.9,96.4,51.434682846069336,Cole Palmer,3.0,1,Cole Palmer; Enzo Fernández,Bukayo Saka; Matheus Santos Carneiro da Cunha,1320.0
+28,48.0,48.0,0,1,1,1.5,95.8,47.45836305618286,Cole Palmer,1.0,0,Morgan Rogers,Florian Wirtz,1368.0
+29,54.0,54.0,0,0,2,1.5,95.7,49.04660940170288,Cole Palmer,9.0,1,,,1422.0
+30,49.0,49.0,0,2,1,0.4,96.7,50.955605030059814,Mohamed Salah,1.0,0,Mohamed Salah; Dominic Calvert-Lewin,Bruno Borges Fernandes; Viktor Gyökeres,1471.0
+31,62.0,66.0,1,2,1,2.2,94.7,46.02841591835022,Bruno Borges Fernandes,13.0,0,Virgil van Dijk; Bruno Borges Fernandes,Mohamed Salah; Hugo Bueno López,1533.0
+32,61.0,61.0,0,1,1,0.1,96.5,47.10000705718994,Bruno Borges Fernandes,4.0,1,Viktor Gyökeres,Igor Thiago Nascimento Rodrigues,1594.0
+33,92.0,92.0,0,1,1,0.8,95.6,75.53635501861572,Cole Palmer,2.0,0,Matheus Nunes,William Saliba,1686.0
+34,39.0,39.0,0,1,1,0.0,96.4,35.66672325134277,Viktor Gyökeres,1.0,0,Cody Gakpo,Enzo Fernández,1725.0
+35,53.0,53.0,0,0,2,0.0,96.7,48.69470739364624,Morgan Rogers,1.0,0,,,1778.0
+36,67.0,67.0,0,2,1,1.6,94.7,65.17002511024475,Antoine Semenyo,12.0,1,Antoine Semenyo; Dean Henderson,Bart Verbruggen; Cole Palmer,1845.0
+37,66.0,66.0,0,1,1,0.0,96.3,47.35683274269104,Viktor Gyökeres,1.0,0,William Saliba,Matty Cash,1911.0
+38,53.0,53.0,0,1,1,0.6,95.5,43.755056381225586,Viktor Gyökeres,1.0,2,Adam Armstrong,Dominic Calvert-Lewin,1964.0

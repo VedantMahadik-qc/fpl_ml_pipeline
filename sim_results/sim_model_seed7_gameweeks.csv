@@ -1,0 +1,39 @@
+gameweek,points,gross_points,hits,transfers,free_transfers_after,bank,squad_value,projected_xi,captain,captain_points,auto_subs,transfers_in,transfers_out,total_points
+1,50.0,50.0,0,0,1,0.0,100.0,48.733420848846436,Mohamed Salah,8.0,3,,,50.0
+2,37.0,37.0,0,0,2,0.0,99.8,47.411200284957886,Mohamed Salah,5.0,1,,,87.0
+3,58.0,58.0,0,2,1,0.3,99.3,46.687984466552734,Mohamed Salah,3.0,0,Fabian Schär; Dan Burn,Vitalii Mykolenko; Joško Gvardiol,145.0
+4,61.0,61.0,0,1,1,0.4,99.2,48.720221757888794,Mohamed Salah,9.0,1,Antoine Semenyo,Eberechi Eze,206.0
+5,50.0,50.0,0,1,1,0.9,98.6,47.43071222305298,Mohamed Salah,5.0,2,Francisco Evanilson de Lima Barbosa,Yoane Wissa,256.0
+6,35.0,35.0,0,1,1,0.3,99.1,47.65890693664551,Mohamed Salah,2.0,1,Kevin Schade,Ismaïla Sarr,291.0
+7,52.0,52.0,0,1,1,1.5,97.5,47.68885135650635,Mohamed Salah,2.0,0,Matty Cash,Rayan Aït-Nouri,343.0
+8,45.0,49.0,1,2,1,0.0,99.1,50.319769859313965,Mohamed Salah,2.0,1,Bruno Borges Fernandes; Nick Woltemade,Kevin Schade; Jarrod Bowen,388.0
+9,66.0,70.0,1,2,1,2.1,96.6,49.01187992095947,Mohamed Salah,6.0,1,Iliman Ndiaye; Joe Rodon,Fabian Schär; Morgan Gibbs-White,454.0
+10,53.0,53.0,0,1,1,0.1,98.7,53.00456619262695,Mohamed Salah,10.0,0,Viktor Gyökeres,Francisco Evanilson de Lima Barbosa,507.0
+11,43.0,43.0,0,1,1,1.3,97.5,52.440446853637695,Mohamed Salah,2.0,1,Igor Thiago Nascimento Rodrigues,Nick Woltemade,550.0
+12,37.0,37.0,0,1,1,0.2,98.5,52.34142279624939,Mohamed Salah,2.0,2,Marc Cucurella Saseta,Dan Burn,587.0
+13,62.0,62.0,0,1,1,0.8,97.9,48.775522232055664,Mohamed Salah,13.0,1,Kevin Schade,Antoine Semenyo,649.0
+14,30.0,30.0,0,1,1,2.4,96.2,45.66235947608948,Bruno Borges Fernandes,4.0,0,Elliot Anderson,Kevin Schade,679.0
+15,83.0,83.0,0,1,1,0.5,98.2,47.24446177482605,Bruno Borges Fernandes,18.0,1,Phil Foden,Iliman Ndiaye,762.0
+16,64.0,68.0,1,2,1,3.2,95.7,52.342105865478516,Phil Foden,11.0,1,Bukayo Saka; Nico O'Reilly,Joe Rodon; Mohamed Salah,826.0
+17,55.0,55.0,0,1,1,1.2,97.9,50.00179624557495,Phil Foden,3.0,2,Hugo Ekitiké,Igor Thiago Nascimento Rodrigues,881.0
+18,35.0,35.0,0,1,1,1.2,97.7,48.90092968940735,Hugo Ekitiké,5.0,1,Matheus Santos Carneiro da Cunha,Bryan Mbeumo,916.0
+19,26.0,26.0,0,1,1,2.9,96.0,49.5312123298645,Phil Foden,3.0,1,Morgan Gibbs-White,Bruno Borges Fernandes,942.0
+20,49.0,49.0,0,1,1,2.5,96.5,48.580843925476074,Bukayo Saka,4.0,1,Keane Lewis-Potter,Sepp van den Berg,991.0
+21,62.0,62.0,0,1,1,4.1,94.8,46.245447397232056,Morgan Gibbs-White,9.0,1,Michael Kayode,Marc Cucurella Saseta,1053.0
+22,26.0,30.0,1,2,1,1.1,97.5,46.823323011398315,Phil Foden,1.0,1,Marc Guéhi; Florian Wirtz,Nico O'Reilly; Elliot Anderson,1079.0
+23,43.0,43.0,0,1,1,1.5,96.9,45.525136947631836,Morgan Gibbs-White,6.0,0,Mateus Mané,Lyle Foster,1122.0
+24,81.0,81.0,0,1,1,0.4,97.7,44.22731304168701,Bruno Borges Fernandes,10.0,1,Bruno Borges Fernandes,Phil Foden,1203.0
+25,57.0,61.0,1,2,1,1.7,96.5,46.85635542869568,Viktor Gyökeres,12.0,0,William Saliba; Declan Rice,Bukayo Saka; Keane Lewis-Potter,1260.0
+26,52.0,52.0,0,1,1,1.9,96.5,68.5234146118164,Viktor Gyökeres,3.0,1,Hugo Bueno López,Michael Kayode,1312.0
+27,48.0,52.0,1,2,1,0.1,98.3,48.88658785820007,Cole Palmer,3.0,1,Cole Palmer; Joachim Andersen,William Saliba; Morgan Gibbs-White,1360.0
+28,60.0,60.0,0,1,1,0.7,97.8,46.92749047279358,Cole Palmer,1.0,1,Morgan Rogers,Florian Wirtz,1420.0
+29,39.0,39.0,0,1,1,0.4,98.1,49.558109283447266,Cole Palmer,9.0,1,Robert Lynch Sánchez,Matz Sels,1459.0
+30,42.0,42.0,0,1,1,0.2,98.1,48.780702114105225,Cole Palmer,2.0,0,Álex Jiménez Sánchez,Hugo Bueno López,1501.0
+31,52.0,56.0,1,2,1,0.3,97.9,42.83269989490509,Cole Palmer,2.0,0,Sepp van den Berg; Morgan Gibbs-White,Declan Rice; Matty Cash,1553.0
+32,56.0,56.0,0,1,1,0.1,98.0,47.90117073059082,Bruno Borges Fernandes,4.0,2,Antoine Semenyo,Matheus Santos Carneiro da Cunha,1609.0
+33,77.0,77.0,0,1,1,3.4,94.4,69.60096442699432,Cole Palmer,2.0,0,Dominic Calvert-Lewin,Hugo Ekitiké,1686.0
+34,42.0,46.0,1,2,1,0.0,97.8,36.29467010498047,Viktor Gyökeres,1.0,0,Gabriel dos Santos Magalhães; Jordan Pickford,Robert Lynch Sánchez; Álex Jiménez Sánchez,1728.0
+35,57.0,57.0,0,1,1,1.0,97.0,48.220386028289795,Bruno Borges Fernandes,5.0,0,Rayan Cherki,Morgan Gibbs-White,1785.0
+36,78.0,78.0,0,1,1,0.2,97.6,61.75096559524536,Antoine Semenyo,12.0,0,Maxence Lacroix,Ezri Konsa Ngoyo,1863.0
+37,48.0,48.0,0,1,1,0.3,97.5,49.638256311416626,Viktor Gyökeres,1.0,1,Timothy Castagne,Sepp van den Berg,1911.0
+38,47.0,47.0,0,1,1,0.2,97.3,44.43556809425354,Viktor Gyökeres,1.0,2,Ferdi Kadıoğlu,Joachim Andersen,1958.0

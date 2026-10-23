@@ -27,8 +27,19 @@
     2,
     3,
     4,
-    5
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
   ],
+  "ensemble_size": 1,
   "benchmark_csv": null,
-  "output_dir": "C:\\Users\\Vedant\\AppData\\Local\\Temp\\claude\\C--Users-Vedant-Downloads-Projects-fpl-ml-pipeline\\3b29b82b-1404-4293-8064-5d668eee1dba\\scratchpad\\final_odds"
+  "output_dir": "sim_results"
 }
