@@ -21,6 +21,14 @@
   "time_limit": 60,
   "budget": 100.0,
   "team_rating_window": 10,
+  "odds": true,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
   "benchmark_csv": null,
-  "output_dir": "sim_results"
+  "output_dir": "C:\\Users\\Vedant\\AppData\\Local\\Temp\\claude\\C--Users-Vedant-Downloads-Projects-fpl-ml-pipeline\\3b29b82b-1404-4293-8064-5d668eee1dba\\scratchpad\\final_odds"
 }

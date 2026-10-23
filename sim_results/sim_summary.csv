@@ -1,4 +1,4 @@
-projector,gameweeks,total_points,mean_points,hits,transfers,auto_subs,captain_points,final_squad_value
-model,38,1962.0,51.63157894736842,7,44,28,202.0,97.2
-roll3,38,1807.0,47.55263157894737,35,72,35,167.0,101.3
-oracle,38,4224.0,111.15789473684211,37,74,0,647.0,109.0
+projector,gameweeks,total_points,mean_points,hits,transfers,auto_subs,captain_points,final_squad_value,seeds,total_std,total_min,total_max
+model,38.0,1956.8,51.49473684210526,6.0,43.0,33.6,201.0,96.9,5.0,26.366645596283195,1933.0,2001.0
+roll3,38.0,1807.0,47.55263157894737,35.0,72.0,35.0,167.0,101.3,,,,
+oracle,38.0,4224.0,111.15789473684211,37.0,74.0,0.0,647.0,109.0,,,,

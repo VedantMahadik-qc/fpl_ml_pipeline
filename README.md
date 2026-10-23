@@ -58,33 +58,43 @@ those seasons too.
 
 ![Cumulative points, 2025-26](sim_results/sim_cumulative_points.png)
 
-| Forecasts fed to the solver | Points | Before hits | Transfers | Hits |
+A single replay is noisy: a small change in projections sends the squad down a
+different path, and the difference compounds over 38 weeks. So the model is run
+under five XGBoost seeds and reported as a spread. The baselines are
+deterministic.
+
+| Forecasts fed to the solver | Points (5 seeds) | Worst seed | Before hits | Hits |
 | --- | ---: | ---: | ---: | ---: |
-| Two-stage model | **1,962** | 1,990 | 44 | 7 |
-| Two-stage model, retrained every 4 GWs | **1,994** | 2,014 | 42 | 5 |
-| 3-GW rolling average (baseline) | 1,807 | 1,947 | 72 | 35 |
-| Actual points, with hindsight (ceiling) | 4,224 | 4,372 | 74 | 37 |
+| Two-stage model, with bookmaker odds | **1,957 ± 26** | 1,933 | 1,981 | 6 |
+| Two-stage model, without odds | 1,912 ± 97 | 1,763 | — | 6 |
+| 3-GW rolling average (baseline) | 1,807 | — | 1,947 | 35 |
+| Actual points, with hindsight (ceiling) | 4,224 | — | 4,372 | 37 |
 
 How to read this honestly:
 
-- **The model beats the baseline under every planning horizon tried**, but the
-  margin is sensitive to it: +157 at H=1, +54 at H=2, +155 at H=4, +49 at H=6.
-- **Most of the edge is discipline, not picks.** Before hits the gap is 43
-  points. The baseline chases noisy 3-week form into 35 hits; the model takes 7.
-- **This is about 52 points a gameweek with no chips and no team news.** Real
-  managers have two of each chip and read press conferences. Without the 2025-26
-  average manager score per gameweek (the FPL API only serves the current
-  season) there is no comparison to the field here; pass one in with
+- **The model beats the baseline in all five seeds**, by 150 points on average.
+  Without odds it does so in four of five, and its worst seed loses.
+- **Odds mostly buy reliability.** Their mean gain (+45) is inside the noise; the
+  spread shrinking from ±97 to ±26 is the clearer effect.
+- **Most of the edge over the baseline is discipline, not picks.** Before hits
+  the gap is 34 points. The baseline chases noisy 3-week form into 35 hits; the
+  model takes about 6.
+- **About 51 points a gameweek with no chips and no team news.** Real managers
+  have two of each chip and read press conferences. Without the 2025-26 average
+  manager score per gameweek (the FPL API only serves the current season) there
+  is no comparison to the field here; pass one in with
   `--benchmark-csv gameweek,average_points` to add it.
 - **Simplifications:** the fixture schedule is the one that was played, so
   postponements are known early; availability is "registered at a club", so
-  injuries are only seen through recent minutes.
+  injuries are only seen through recent minutes; odds are used for the next
+  gameweek only, because later rounds are not priced at the deadline.
 
-Reproduce in about two minutes:
+Reproduce (about ten minutes for five seeds):
 
 ```bash
-python fpl_season_sim.py                       # writes sim_results/
-python fpl_season_sim.py --retrain-every 4     # walk-forward retraining
+python fpl_season_sim.py --seeds 1 2 3 4 5             # writes sim_results/
+python fpl_season_sim.py --seeds 1 2 3 4 5 --no-odds   # the ablation row
+python fpl_season_sim.py --retrain-every 4             # walk-forward retraining
 ```
 
 ---
@@ -150,15 +160,22 @@ rather than string matching.
    defined for appearances and rolls over a player's last *n* appearances: with
    0 minutes xGC is 0, and `exp(0) = 1` would score every benchwarmer as a
    certain clean sheet.
-3. **Builds causal team ratings and fixture-difficulty features** — see
+3. **Attaches bookmaker odds for the fixture** (`fpl_odds.py`): margin-free
+   1X2 and over/under-2.5 prices from football-data.co.uk are fitted to Poisson
+   goal rates, giving `odds_team_goals`, `odds_team_conceded`, `odds_cs_prob`
+   and `odds_win_prob`. They track a team's actual goals better than the
+   xG-derived ratings (correlation 0.37 vs 0.30). Odds only exist for the next
+   round, so Phase 3 also trains on an odds-masked copy of every row, and
+   fixtures further ahead fall back on the difficulty ratings.
+4. **Builds causal team ratings and fixture-difficulty features** — see
    [below](#fixture-difficulty-ratings-v2).
-4. **Builds rolling means over 3 / 5 / 10 gameweeks** for nine metrics:
+5. **Builds rolling means over 3 / 5 / 10 gameweeks** for nine metrics:
    `minutes`, `total_points`, `expected_goals`, `expected_assists`,
    `defensive_contribution`, `clean_sheet_probability`, plus `fdr_opp_defence`,
    `fdr_opp_attack` and `fdr_expected_team_goals`. The `.shift(1)` happens
    **before** `.rolling(...)`, so the window for gameweek *N* covers *N-1* and
    older and never *N* itself.
-5. **Imputes cold starts** with position medians and keeps every row. The
+6. **Imputes cold starts** with position medians and keeps every row. The
    imputer is a `fit`/`transform` class persisted to JSON, so the same medians
    apply at train and serve time.
 
@@ -446,6 +463,7 @@ STARTING XI  (5-2-3)
 ├── fpl_optimizer.py            # Phase 4 — MILP squad selection
 ├── fpl_live_inference.py       # Phase 5 — forward projection + live squad
 ├── fpl_transfers.py            # multi-period transfer solver
+├── fpl_odds.py                 # bookmaker odds -> Poisson goal rates
 ├── fpl_season_sim.py           # season replay against real results
 ├── tests/                      # pytest: rules, auto-subs, features, solver
 ├── sim_results/                # replay output: per-GW logs, summary, chart
@@ -552,6 +570,7 @@ should do more for real accuracy than any further feature work.
 
 - [Official Fantasy Premier League API](https://fantasy.premierleague.com/api/bootstrap-static/) — live prices, availability, fixtures.
 - [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) — the historical gameweek archive this project trains on.
+- [football-data.co.uk](https://www.football-data.co.uk/englandm.php) — pre-match Premier League betting odds.
 - The FPL analytics community for the fantasy-assist and Poisson clean-sheet heuristics.
 - Dixon & Coles (1997), *Modelling Association Football Scores and Inefficiencies in the Football Betting Market* — the multiplicative attack × defence form used for fixture difficulty.
 

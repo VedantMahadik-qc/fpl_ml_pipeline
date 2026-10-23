@@ -11,6 +11,8 @@ At every deadline t the simulator only uses what was knowable at that moment:
                   across the planning horizon (GW t+2 never sees GW t+1)
     difficulty    team attack/defence ratings as of deadline t, recombined for
                   every future fixture via the shared derive_fdr_matchups()
+    odds          bookmaker prices for GW t's fixtures only; later gameweeks
+                  are not priced yet at the deadline, so they go in as NaN
     prices        the price at deadline t, held static across the horizon
     models        trained on prior seasons only (or walk-forward with
                   --retrain-every, on prior seasons + gameweeks < t)
@@ -46,6 +48,7 @@ Usage
     python fpl_season_sim.py                                  # all of 2025-26
     python fpl_season_sim.py --end-gw 10 --projectors model roll3
     python fpl_season_sim.py --retrain-every 4 --horizon 4
+    python fpl_season_sim.py --seeds 1 2 3 4 5                # measure run-to-run noise
     python fpl_season_sim.py --benchmark-csv averages.csv     # gameweek,average_points
 """
 
@@ -56,7 +59,7 @@ import json
 import logging
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -71,6 +74,7 @@ from fpl_features import (
     compute_team_ratings,
     derive_fdr_matchups,
 )
+from fpl_odds import ODDS_PREFIX
 from fpl_optimizer import FORMATION_BOUNDS, POSITIONS, predict_points
 from fpl_transfers import HIT_COST, MAX_FREE_TRANSFERS, TransferConfig, plan_transfers
 
@@ -95,6 +99,9 @@ class SimConfig:
     time_limit: int = 60
     budget: float = 100.0
     team_rating_window: int = 10
+    odds: bool = True
+    seeds: Sequence[int] = (42,)
+    random_state: int = 42            # set per run from `seeds`
     benchmark_csv: Optional[Path] = None
     output_dir: Path = Path("sim_results")
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -292,14 +299,16 @@ def deadline_feature_rows(data: SeasonData, t: int, horizon_end: int,
 
     Form columns come from the player's form-at-t row, so GW t+2 is projected
     from the same information as GW t. Only the fixture-specific columns change:
-    venue, opponent, and the FDR matchup rebuilt from ratings frozen at t.
+    venue, opponent, the FDR matchup rebuilt from ratings frozen at t, and the
+    odds, which exist for GW t alone.
     """
     form = data.form_at(t, players)
     fixtures = data.fixtures_between(t, horizon_end, form.index)
     ratings = data.team_ratings_at(t)
 
+    odds = [c for c in fixtures.columns if c.startswith(ODDS_PREFIX)]
     fixture_cols = ["player_id", "gameweek", "kickoff_time", "was_home", "team",
-                    "opponent_team_id", "total_points", "minutes"]
+                    "opponent_team_id", "total_points", "minutes", *odds]
     out = fixtures[fixture_cols].merge(
         form.drop(columns=[c for c in fixture_cols if c != "player_id" and c in form.columns]
                   + [c for c in FDR_BASE_FEATURES if c in form.columns]),
@@ -317,6 +326,7 @@ def deadline_feature_rows(data: SeasonData, t: int, horizon_end: int,
     out["fdr_opp_attack"] = rating(opponent, "attack_rating", np.nan)
     out["fdr_opp_defence"] = rating(opponent, "defence_rating", np.nan)
     out["fdr_opp_rating_known"] = rating(opponent, "rating_known", 0)
+    out.loc[out["gameweek"] > t, odds] = np.nan
     return derive_fdr_matchups(out)
 
 
@@ -417,7 +427,8 @@ def train_bundles(features: pd.DataFrame, config: SimConfig,
     test = frame[season & (frame["gameweek"] == probe_gw)]
 
     train_config = TrainConfig(train_seasons=tuple(config.train_seasons),
-                               test_season=config.season, permutation_repeats=0)
+                               test_season=config.season, permutation_repeats=0,
+                               random_state=config.random_state)
     bundles: Dict[str, Dict[str, Any]] = {}
     for position in POSITIONS:
         result = train_position_model(position, train, test, feature_columns, train_config)
@@ -520,27 +531,26 @@ def build_sim_features(config: SimConfig) -> pd.DataFrame:
     feature_config = FeatureConfig(
         input_path=config.history_path, medians_path=None,
         fit_seasons=tuple(config.train_seasons),
-        team_rating_window=config.team_rating_window,
+        team_rating_window=config.team_rating_window, odds=config.odds,
     )
     return build_features(feature_config)
 
 
-def run_simulation(config: SimConfig) -> Dict[str, Any]:
-    features = build_sim_features(config)
-    data = SeasonData(features, config.season, config.team_rating_window)
+def simulate(config: SimConfig, features: pd.DataFrame, data: SeasonData,
+             projectors: Sequence[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """One season for each projector, with models seeded by config.random_state."""
     end_gw = config.end_gw or max(data.gameweeks)
     deadlines = [g for g in data.gameweeks if config.start_gw <= g <= end_gw]
     if not deadlines:
         raise RuntimeError(f"No gameweeks in {config.start_gw}-{end_gw}.")
 
     bundles = None
-    trained_for = config.start_gw
-    if "model" in config.projectors:
+    trained_for = deadlines[0]
+    if "model" in projectors:
         bundles = train_bundles(features, config, None)
-        trained_for = deadlines[0]
 
-    managers = {name: Manager() for name in config.projectors}
-    logs: Dict[str, List[Dict[str, Any]]] = {name: [] for name in config.projectors}
+    managers = {name: Manager() for name in projectors}
+    logs: Dict[str, List[Dict[str, Any]]] = {name: [] for name in projectors}
 
     for index, t in enumerate(deadlines):
         started = time.perf_counter()
@@ -553,11 +563,10 @@ def run_simulation(config: SimConfig) -> Dict[str, Any]:
         available = data.available(t)
         owned = set().union(*(m.squad for m in managers.values()))
         prices = data.price_at(t)
-        projections = project(data, t, horizon_end, available, prices, bundles,
-                              config.projectors)
+        projections = project(data, t, horizon_end, available, prices, bundles, projectors)
         form = data.form_at(t, list(set(available) | owned))
 
-        for name in config.projectors:
+        for name in projectors:
             manager = managers[name]
             costs = {**prices, **manager.sale_values(prices)}
             projection = attach_meta(projections[name].copy(), data, form, costs,
@@ -566,11 +575,36 @@ def run_simulation(config: SimConfig) -> Dict[str, Any]:
                                    first_deadline=index == 0)
             logs[name].append(record)
 
-        LOGGER.info("GW%-2d  %s   (%.0fs)", t, "  ".join(
+        LOGGER.info("seed %-3d GW%-2d  %s   (%.0fs)", config.random_state, t, "  ".join(
             f"{name} {logs[name][-1]['points']:>3.0f} [{managers[name].total_points:>4.0f}]"
-            for name in config.projectors), time.perf_counter() - started)
+            for name in projectors), time.perf_counter() - started)
+    return logs
 
-    return write_outputs(logs, config)
+
+def run_simulation(config: SimConfig) -> Dict[str, Any]:
+    """
+    Replay the season once per seed.
+
+    A single replay is noisy: a small change in projections sends the squad
+    down a different path and the differences compound over 38 weeks. Varying
+    only the model seed measures that noise, so a claim about the model is a
+    claim about the spread, not one lucky path. The baselines are
+    deterministic and run once.
+    """
+    features = build_sim_features(config)
+    data = SeasonData(features, config.season, config.team_rating_window)
+
+    logs: Dict[str, List[Dict[str, Any]]] = {}
+    seed_runs: Dict[int, pd.DataFrame] = {}
+    seeds = config.seeds if "model" in config.projectors else config.seeds[:1]
+    for index, seed in enumerate(seeds):
+        projectors = list(config.projectors) if index == 0 else ["model"]
+        result = simulate(replace(config, random_state=seed), features, data, projectors)
+        if index == 0:
+            logs = {name: rows for name, rows in result.items() if name != "model"}
+        if "model" in result:
+            seed_runs[seed] = pd.DataFrame(result["model"])
+    return write_outputs(logs, seed_runs, config)
 
 
 def load_benchmark(path: Optional[Path]) -> Optional[pd.DataFrame]:
@@ -582,15 +616,8 @@ def load_benchmark(path: Optional[Path]) -> Optional[pd.DataFrame]:
     return frame[["gameweek", "average_points"]]
 
 
-def write_outputs(logs: Dict[str, List[Dict[str, Any]]], config: SimConfig) -> Dict[str, Any]:
-    out = Path(config.output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-
-    frames = {name: pd.DataFrame(rows) for name, rows in logs.items()}
-    for name, frame in frames.items():
-        frame.to_csv(out / f"sim_{name}_gameweeks.csv", index=False)
-
-    summary = pd.DataFrame([{
+def _summarise(name: str, frame: pd.DataFrame) -> Dict[str, Any]:
+    return {
         "projector": name,
         "gameweeks": len(frame),
         "total_points": frame["points"].sum(),
@@ -600,11 +627,38 @@ def write_outputs(logs: Dict[str, List[Dict[str, Any]]], config: SimConfig) -> D
         "auto_subs": int(frame["auto_subs"].sum()),
         "captain_points": frame["captain_points"].sum(),
         "final_squad_value": frame["squad_value"].iloc[-1] + frame["bank"].iloc[-1],
-    } for name, frame in frames.items()])
+    }
+
+
+def write_outputs(logs: Dict[str, List[Dict[str, Any]]], seed_runs: Dict[int, pd.DataFrame],
+                  config: SimConfig) -> Dict[str, Any]:
+    out = Path(config.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    frames = {name: pd.DataFrame(rows) for name, rows in logs.items()}
+    for name, frame in frames.items():
+        frame.to_csv(out / f"sim_{name}_gameweeks.csv", index=False)
+    for seed, frame in seed_runs.items():
+        frame.to_csv(out / f"sim_model_seed{seed}_gameweeks.csv", index=False)
+
+    rows = [_summarise(name, frame) for name, frame in frames.items()]
+    seeds = pd.DataFrame([{"seed": seed, **_summarise("model", frame)}
+                          for seed, frame in seed_runs.items()])
+    if not seeds.empty:
+        seeds = seeds.drop(columns="projector")
+        seeds.to_csv(out / "sim_seeds.csv", index=False)
+        rows.insert(0, {"projector": "model", **seeds.drop(columns="seed").mean().to_dict(),
+                        "seeds": len(seeds),
+                        "total_std": seeds["total_points"].std(ddof=1) if len(seeds) > 1
+                        else 0.0,
+                        "total_min": seeds["total_points"].min(),
+                        "total_max": seeds["total_points"].max()})
+    summary = pd.DataFrame(rows)
 
     benchmark = load_benchmark(config.benchmark_csv)
     if benchmark is not None:
-        played = frames[next(iter(frames))]["gameweek"]
+        reference = next(iter(seed_runs.values()), None)
+        played = (reference if reference is not None else next(iter(frames.values())))["gameweek"]
         average = benchmark[benchmark["gameweek"].isin(played)]["average_points"].sum()
         summary = pd.concat([summary, pd.DataFrame([{
             "projector": "average_manager", "gameweeks": len(played),
@@ -613,45 +667,60 @@ def write_outputs(logs: Dict[str, List[Dict[str, Any]]], config: SimConfig) -> D
 
     summary.to_csv(out / "sim_summary.csv", index=False)
     settings = {k: (str(v) if isinstance(v, Path) else v)
-                for k, v in asdict(config).items() if k != "metadata"}
+                for k, v in asdict(config).items() if k not in ("metadata", "random_state")}
     (out / "sim_config.json").write_text(json.dumps(settings, indent=2, default=list),
                                          encoding="utf-8")
-    plot_cumulative(frames, benchmark, out / "sim_cumulative_points.png", config)
+    plot_cumulative(frames, seed_runs, benchmark, out / "sim_cumulative_points.png", config)
     LOGGER.info("Wrote results to %s/", out)
-    return {"summary": summary, "gameweeks": frames}
+    return {"summary": summary, "gameweeks": frames, "seeds": seeds}
 
 
-def plot_cumulative(frames: Dict[str, pd.DataFrame], benchmark: Optional[pd.DataFrame],
-                    path: Path, config: SimConfig) -> None:
+def plot_cumulative(frames: Dict[str, pd.DataFrame], seed_runs: Dict[int, pd.DataFrame],
+                    benchmark: Optional[pd.DataFrame], path: Path, config: SimConfig) -> None:
     """
     Cumulative points, model against the baseline (and the average manager when
-    supplied). The hindsight ceiling is named in the subtitle rather than drawn:
-    at more than twice the scale it would flatten the comparison that matters.
+    supplied). With several seeds the model is drawn as their mean with the
+    min-max band, so the chart shows the noise rather than one path. The
+    hindsight ceiling is named in the subtitle rather than drawn: at more than
+    twice the scale it would flatten the comparison that matters.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     ink, muted, grid = "#0b0b0b", "#52514e", "#e4e3df"
-    styles = {
-        "model": {"color": "#2a78d6", "label": "Two-stage model"},
-        "roll3": {"color": "#eb6834", "label": "3-GW rolling average"},
-    }
+    blue, orange = "#2a78d6", "#eb6834"
     fig, ax = plt.subplots(figsize=(9, 5.2), facecolor="#fcfcfb")
     ax.set_facecolor("#fcfcfb")
 
-    for name in ("roll3", "model"):
-        if name not in frames:
-            continue
-        frame = frames[name]
+    def end_label(x, y, text):
+        ax.annotate(text, (x, y), xytext=(6, 0), textcoords="offset points",
+                    va="center", fontsize=9, color=muted)
+
+    if "roll3" in frames:
+        frame = frames["roll3"]
         total = frame["points"].sum()
-        ax.plot(frame["gameweek"], frame["points"].cumsum(), lw=2,
-                color=styles[name]["color"], label=f"{styles[name]['label']}  {total:,.0f}")
-        ax.annotate(f"{styles[name]['label']}  {total:,.0f}",
-                    (frame["gameweek"].iloc[-1], total), xytext=(6, 0),
-                    textcoords="offset points", va="center", fontsize=9, color=muted)
+        ax.plot(frame["gameweek"], frame["points"].cumsum(), lw=2, color=orange,
+                label=f"3-GW rolling average  {total:,.0f}")
+        end_label(frame["gameweek"].iloc[-1], total, f"3-GW rolling average  {total:,.0f}")
+
+    reference = None
+    if seed_runs:
+        paths = pd.DataFrame({seed: frame.set_index("gameweek")["points"].cumsum()
+                              for seed, frame in seed_runs.items()})
+        reference = paths.index
+        mean = paths.mean(axis=1)
+        if paths.shape[1] > 1:
+            ax.fill_between(paths.index, paths.min(axis=1), paths.max(axis=1), color=blue,
+                            alpha=0.16, lw=0, label=f"Model, range over {paths.shape[1]} seeds")
+            label = f"Two-stage model, mean of {paths.shape[1]} seeds  {mean.iloc[-1]:,.0f}"
+        else:
+            label = f"Two-stage model  {mean.iloc[-1]:,.0f}"
+        ax.plot(mean.index, mean, lw=2, color=blue, label=label)
+        end_label(mean.index[-1], mean.iloc[-1], f"Two-stage model  {mean.iloc[-1]:,.0f}")
+
     if benchmark is not None:
-        gws = frames[next(iter(frames))]["gameweek"]
+        gws = reference if reference is not None else next(iter(frames.values()))["gameweek"]
         bench = benchmark[benchmark["gameweek"].isin(gws)].sort_values("gameweek")
         total = bench["average_points"].sum()
         ax.plot(bench["gameweek"], bench["average_points"].cumsum(), color=muted, lw=1.5,
@@ -673,8 +742,10 @@ def plot_cumulative(frames: Dict[str, pd.DataFrame], benchmark: Optional[pd.Data
     ax.set_xlim(left=1)
     ax.set_ylim(bottom=0)
     # Drawn baseline-first so the model sits on top; listed model-first.
+    rank = {"Two-stage": 0, "Model, range": 1}
     handles, labels = ax.get_legend_handles_labels()
-    order = sorted(range(len(labels)), key=lambda i: not labels[i].startswith("Two-stage"))
+    order = sorted(range(len(labels)),
+                   key=lambda i: next((v for k, v in rank.items() if labels[i].startswith(k)), 2))
     ax.legend([handles[i] for i in order], [labels[i] for i in order],
               frameon=False, loc="upper left", labelcolor=ink, fontsize=9)
     fig.tight_layout(rect=(0, 0, 0.9, 0.89))
@@ -682,18 +753,23 @@ def plot_cumulative(frames: Dict[str, pd.DataFrame], benchmark: Optional[pd.Data
     plt.close(fig)
 
 
-def print_summary(summary: pd.DataFrame) -> None:
+def print_summary(summary: pd.DataFrame, seeds: pd.DataFrame) -> None:
     print("\n" + "=" * 78)
     print("SEASON SIMULATION")
     print("=" * 78)
-    columns = ["projector", "gameweeks", "total_points", "mean_points", "transfers", "hits",
+    columns = ["projector", "total_points", "mean_points", "transfers", "hits",
                "auto_subs", "final_squad_value"]
     print(summary[[c for c in columns if c in summary.columns]]
-          .round(2).to_string(index=False))
-    if {"model", "roll3"}.issubset(set(summary["projector"])):
-        model = summary.set_index("projector").at["model", "total_points"]
+          .round(1).to_string(index=False))
+    if len(seeds) > 1:
+        print(f"\nModel over {len(seeds)} seeds: "
+              + ", ".join(f"{s}: {t:,.0f}" for s, t in zip(seeds["seed"], seeds["total_points"]))
+              + f"  (std {seeds['total_points'].std(ddof=1):.0f})")
+    if not seeds.empty and "roll3" in set(summary["projector"]):
         roll3 = summary.set_index("projector").at["roll3", "total_points"]
-        print(f"\nModel vs 3-GW rolling average: {model - roll3:+.0f} points")
+        wins = int((seeds["total_points"] > roll3).sum())
+        print(f"Model vs 3-GW rolling average: {seeds['total_points'].mean() - roll3:+.0f} "
+              f"points on average; ahead in {wins} of {len(seeds)} seed(s)")
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -713,6 +789,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--candidate-pool", type=int, default=25)
     parser.add_argument("--max-transfers", type=int, default=2)
     parser.add_argument("--time-limit", type=int, default=60)
+    parser.add_argument("--no-odds", action="store_true",
+                        help="Leave the bookmaker odds features out (ablation)")
+    parser.add_argument("--seeds", type=int, nargs="+", default=[42],
+                        help="Model random seeds, one replay each; several measure the noise")
     parser.add_argument("--benchmark-csv", default=None,
                         help="CSV with gameweek,average_points to plot alongside")
     parser.add_argument("-o", "--output-dir", default="sim_results")
@@ -734,7 +814,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         projectors=tuple(args.projectors), retrain_every=args.retrain_every,
         horizon=args.horizon, decay=args.decay, bench_weight=args.bench_weight,
         candidate_pool=args.candidate_pool, max_transfers_per_week=args.max_transfers,
-        time_limit=args.time_limit,
+        time_limit=args.time_limit, odds=not args.no_odds, seeds=tuple(args.seeds),
         benchmark_csv=Path(args.benchmark_csv) if args.benchmark_csv else None,
         output_dir=Path(args.output_dir),
     )
@@ -746,7 +826,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except KeyboardInterrupt:
         LOGGER.error("Interrupted by user.")
         return 130
-    print_summary(outcome["summary"])
+    print_summary(outcome["summary"], outcome["seeds"])
     return 0
 
 
