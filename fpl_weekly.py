@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import pandas as pd
 
 from fpl_optimizer import POSITIONS, ensure_printable_console
+from fpl_transfers import CHIP_LABELS
 
 LOGGER = logging.getLogger("fpl.weekly")
 
@@ -53,6 +54,7 @@ class WeeklyConfig:
     history_seasons: int = 3
     refresh: bool = True
     free_transfers: Optional[int] = None
+    chips: bool = True
     bench_weight: float = 0.10
     features_path: Path = Path("fpl_ml_features.csv")
     history_path: Path = Path("fpl_combined_history.csv")
@@ -146,6 +148,7 @@ def plan_for_team(config: WeeklyConfig) -> Dict[str, Any]:
         features_path=config.features_path, model_dir=config.model_dir,
         entry_id=config.team_id, horizon=config.horizon,
         free_transfers=config.free_transfers, bench_weight=config.bench_weight,
+        use_chips=config.chips,
     )
     done = step(f"Planning {config.horizon} weeks for team {config.team_id}")
     result = run(transfer_config)
@@ -215,6 +218,7 @@ tr.divider td {{ color: var(--muted); font-size: 12px; font-weight: 600; padding
 .tag {{ display: inline-block; font-size: 11px; font-weight: 600; padding: 0 5px;
        border-radius: 4px; background: var(--accent); color: #fff; margin-left: 4px; }}
 .total {{ font-size: 15px; }}
+.tag.chip {{ font-size: 12px; padding: 1px 7px; margin-left: 8px; vertical-align: 2px; }}
 footer {{ color: var(--muted); font-size: 12px; margin-top: 24px; }}
 </style>
 </head>
@@ -278,8 +282,14 @@ def render_plan(result: Dict[str, Any]) -> str:
         else:
             cost = "no transfers, roll the free transfer"
         when = "make these now" if index == 0 else "provisional"
+        chip = week.get("chip")
+        chip_tag = (f'<span class="tag chip">{_e(CHIP_LABELS[chip])}</span>' if chip else "")
+        if chip == "freehit":
+            cost = "Free Hit: these swaps last one week, your squad returns next week"
+        elif chip == "wildcard":
+            cost = f"Wildcard: {week['n_transfers']} transfers, all free"
         cards.append(
-            f'<section class="card"><div class="head"><h2>GW{week["gameweek"]}</h2>'
+            f'<section class="card"><div class="head"><h2>GW{week["gameweek"]}{chip_tag}</h2>'
             f'<span class="meta">{when} · {cost} · {week["free_transfers"]} FT · '
             f'bank £{week["bank"]:.1f}m</span>'
             f'<span class="meta total">xPts {week["net_points"]:.1f}</span></div>'
@@ -367,6 +377,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Gameweeks to plan ahead with --team-id (default: 4)")
     parser.add_argument("--free-transfers", type=int, default=None,
                         help="Override the free transfers derived from your history")
+    parser.add_argument("--no-chips", action="store_true",
+                        help="Plan without Wildcard/Free Hit/Bench Boost/Triple Captain")
     parser.add_argument("--bench-weight", type=float, default=0.10)
     parser.add_argument("--no-refresh", action="store_true",
                         help="Reuse today's data and models; just re-plan")
@@ -387,6 +399,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     config = WeeklyConfig(
         team_id=args.team_id, horizon=args.horizon, history_seasons=args.history_seasons,
         refresh=not args.no_refresh, free_transfers=args.free_transfers,
+        chips=not args.no_chips,
         bench_weight=args.bench_weight, report_dir=Path(args.report_dir),
         open_report=args.open,
     )

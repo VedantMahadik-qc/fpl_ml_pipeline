@@ -77,7 +77,14 @@ from fpl_features import (
 from fpl_odds import ODDS_PREFIX
 from fpl_optimizer import (FORMATION_BOUNDS, POSITIONS, ensure_printable_console,
                            predict_points)
-from fpl_transfers import HIT_COST, MAX_FREE_TRANSFERS, TransferConfig, plan_transfers
+from fpl_transfers import (
+    DEFAULT_CHIP_RESERVE,
+    HIT_COST,
+    MAX_FREE_TRANSFERS,
+    STANDARD_CHIP_WINDOWS,
+    TransferConfig,
+    plan_transfers,
+)
 
 LOGGER = logging.getLogger("fpl.sim")
 
@@ -103,6 +110,8 @@ class SimConfig:
     odds: bool = True
     seeds: Sequence[int] = (42,)
     ensemble_size: int = 1            # seeds averaged inside each model
+    chips: bool = False               # play Wildcard/Free Hit/Bench Boost/Triple Captain
+    chip_reserve: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_CHIP_RESERVE))
     random_state: int = 42            # set per run from `seeds`
     benchmark_csv: Optional[Path] = None
     output_dir: Path = Path("sim_results")
@@ -136,9 +145,13 @@ def formation_is_legal(positions: Sequence[str]) -> bool:
                for pos, (low, high) in FORMATION_BOUNDS.items())
 
 
-def score_gameweek(squad: pd.DataFrame, actual: Dict[int, Tuple[float, float]]) -> Dict[str, Any]:
+def score_gameweek(squad: pd.DataFrame, actual: Dict[int, Tuple[float, float]],
+                   chip: Optional[str] = None) -> Dict[str, Any]:
     """
     Score one gameweek the way FPL does.
+
+    Bench Boost scores all fifteen with no substitutions; Triple Captain makes
+    the armband worth three times instead of two.
 
     `squad` carries player_id, position, is_starter, is_captain and
     predicted_points. The bench is ordered by predicted points (keeper
@@ -167,6 +180,9 @@ def score_gameweek(squad: pd.DataFrame, actual: Dict[int, Tuple[float, float]]) 
     vice = next((pid for pid in xi if pid != captain), None)
 
     subs: List[Tuple[int, int]] = []
+    if chip == "bboost":
+        xi = xi + bench_keeper + bench_outfield
+        bench_keeper, bench_outfield = [], []
     # FPL processes starters in squad order: keeper, then outfield.
     for pid in sorted(xi, key=lambda p: POSITIONS.index(position[p])):
         if played(pid):
@@ -196,7 +212,8 @@ def score_gameweek(squad: pd.DataFrame, actual: Dict[int, Tuple[float, float]]) 
         armband = None
 
     xi_points = float(sum(points(p) for p in xi))
-    captain_points = points(armband) if armband is not None else 0.0
+    multiplier = 3 if chip == "3xc" else 2
+    captain_points = (multiplier - 1) * points(armband) if armband is not None else 0.0
     return {
         "xi_points": xi_points,
         "captain_points": captain_points,
@@ -454,6 +471,8 @@ class Manager:
     bank: int = 0                                         # tenths of a million
     free_transfers: int = 1
     total_points: float = 0.0
+    chip_windows: List[Tuple[str, int, int]] = field(
+        default_factory=lambda: list(STANDARD_CHIP_WINDOWS))
 
     def sale_values(self, prices: Dict[int, int]) -> Dict[int, int]:
         return {pid: selling_price(paid, prices.get(pid, paid))
@@ -469,6 +488,8 @@ def play_deadline(manager: Manager, projection: pd.DataFrame, t: int,
         budget=config.budget, max_transfers_per_week=config.max_transfers_per_week,
         candidate_pool=config.candidate_pool, time_limit=config.time_limit,
         wildcard=first_deadline,
+        chip_windows=list(manager.chip_windows) if config.chips else (),
+        chip_reserve=dict(config.chip_reserve),
     )
     if first_deadline:
         squad_ids, bank, free = [], config.budget, MAX_FREE_TRANSFERS
@@ -478,16 +499,26 @@ def play_deadline(manager: Manager, projection: pd.DataFrame, t: int,
 
     result = plan_transfers(projection, squad_ids, bank, free, transfer_config)
     week = result["plan"][0]
-    new_squad = week["squad"]
-    new_ids = set(int(p) for p in new_squad["player_id"])
+    chip = week.get("chip")
+    playing = week["squad"]
+    # The squad that carries on. Equal to the playing squad except on a Free
+    # Hit, when the real squad sits out the week untouched.
+    new_ids = set(int(p) for p in week["persistent_ids"])
 
     sale = manager.sale_values(prices)
     sold = set(manager.squad) - new_ids
     bought = new_ids - set(manager.squad)
+    if chip:
+        manager.chip_windows.remove(next(w for w in manager.chip_windows
+                                         if w[0] == chip and w[1] <= t <= w[2]))
     if first_deadline:
         hits = 0
         manager.bank = to_tenths(config.budget) - sum(prices[p] for p in bought)
         manager.free_transfers = 1
+    elif chip in ("wildcard", "freehit"):
+        hits = 0
+        manager.bank += sum(sale[p] for p in sold) - sum(prices[p] for p in bought)
+        manager.free_transfers = min(MAX_FREE_TRANSFERS, manager.free_transfers + 1)
     else:
         hits = max(0, len(bought) - manager.free_transfers)
         manager.bank += sum(sale[p] for p in sold) - sum(prices[p] for p in bought)
@@ -500,7 +531,7 @@ def play_deadline(manager: Manager, projection: pd.DataFrame, t: int,
     for pid in bought:
         manager.squad[pid] = prices[pid]
 
-    scored = score_gameweek(new_squad, data.actual.get(t, {}))
+    scored = score_gameweek(playing, data.actual.get(t, {}), chip)
     net = scored["gross_points"] - HIT_COST * hits
     manager.total_points += net
 
@@ -514,7 +545,8 @@ def play_deadline(manager: Manager, projection: pd.DataFrame, t: int,
         "free_transfers_after": manager.free_transfers,
         "bank": manager.bank / 10,
         "squad_value": sum(manager.sale_values(prices).values()) / 10,
-        "projected_xi": float(new_squad.loc[new_squad["is_starter"], "predicted_points"].sum()),
+        "chip": chip or "",
+        "projected_xi": float(playing.loc[playing["is_starter"], "predicted_points"].sum()),
         "captain": name.get(scored["captain_id"], scored["captain_id"]),
         "captain_points": scored["captain_points"],
         "auto_subs": len(scored["auto_subs"]),
@@ -630,6 +662,8 @@ def _summarise(name: str, frame: pd.DataFrame) -> Dict[str, Any]:
         "auto_subs": int(frame["auto_subs"].sum()),
         "captain_points": frame["captain_points"].sum(),
         "final_squad_value": frame["squad_value"].iloc[-1] + frame["bank"].iloc[-1],
+        "chips": "; ".join(f"{c} GW{g}" for c, g in zip(frame.get("chip", []), frame["gameweek"])
+                           if isinstance(c, str) and c),
     }
 
 
@@ -650,7 +684,7 @@ def write_outputs(logs: Dict[str, List[Dict[str, Any]]], seed_runs: Dict[int, pd
     if not seeds.empty:
         seeds = seeds.drop(columns="projector")
         seeds.to_csv(out / "sim_seeds.csv", index=False)
-        rows.insert(0, {"projector": "model", **seeds.drop(columns="seed").mean().to_dict(),
+        rows.insert(0, {"projector": "model", **seeds.drop(columns="seed").mean(numeric_only=True).to_dict(),
                         "seeds": len(seeds),
                         "total_std": seeds["total_points"].std(ddof=1) if len(seeds) > 1
                         else 0.0,
@@ -729,7 +763,8 @@ def plot_cumulative(frames: Dict[str, pd.DataFrame], seed_runs: Dict[int, pd.Dat
         ax.plot(bench["gameweek"], bench["average_points"].cumsum(), color=muted, lw=1.5,
                 ls=(0, (4, 3)), label=f"Average manager  {total:,.0f}")
 
-    subtitle = f"Same solver and FPL rules for both, H={config.horizon}, no chips"
+    chips = "two of each chip" if config.chips else "no chips"
+    subtitle = f"Same solver and FPL rules for both, H={config.horizon}, {chips}"
     if "oracle" in frames:
         subtitle += f"; hindsight ceiling {frames['oracle']['points'].sum():,.0f}"
     fig.text(0.012, 0.965, f"{config.season} replayed deadline by deadline",
@@ -798,6 +833,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Model random seeds, one replay each; several measure the noise")
     parser.add_argument("--ensemble", type=int, default=1,
                         help="Seeds averaged inside each model stage")
+    parser.add_argument("--chips", action="store_true",
+                        help="Let the bot play two of each chip, one per half-season")
     parser.add_argument("--benchmark-csv", default=None,
                         help="CSV with gameweek,average_points to plot alongside")
     parser.add_argument("-o", "--output-dir", default="sim_results")
@@ -821,7 +858,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         horizon=args.horizon, decay=args.decay, bench_weight=args.bench_weight,
         candidate_pool=args.candidate_pool, max_transfers_per_week=args.max_transfers,
         time_limit=args.time_limit, odds=not args.no_odds, seeds=tuple(args.seeds),
-        ensemble_size=args.ensemble,
+        ensemble_size=args.ensemble, chips=args.chips,
         benchmark_csv=Path(args.benchmark_csv) if args.benchmark_csv else None,
         output_dir=Path(args.output_dir),
     )

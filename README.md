@@ -52,11 +52,12 @@ quietly inflated every backtest in v2.
 projects the next four gameweeks using only what was knowable then, runs the
 multi-period transfer solver, executes week one, and scores it against what
 actually happened. It applies auto-subs, vice-captain fallback, -4 hits, a
-free-transfer bank capped at 5, and the half-profit selling-price rule. Models
-are trained on 2023-24 and 2024-25 only, and imputation medians are fitted on
-those seasons too.
+free-transfer bank capped at 5, the half-profit selling-price rule, and two of
+each chip (Wildcard, Free Hit, Bench Boost, Triple Captain), one per half-season.
+Models are trained on 2023-24 and 2024-25 only, and imputation medians are
+fitted on those seasons too.
 
-![Cumulative points, 2025-26](sim_results/sim_cumulative_points.png)
+![Cumulative points, 2025-26, with chips](sim_results/chips/sim_cumulative_points.png)
 
 A single replay is noisy: a small change in projections sends the squad down a
 different path, and the difference compounds over 38 weeks. So every model is
@@ -65,7 +66,8 @@ baselines are deterministic.
 
 | Forecasts fed to the solver | Points (15 seeds) | 95% CI | Worst seed | Before hits | Hits |
 | --- | ---: | :---: | ---: | ---: | ---: |
-| Two-stage model, with bookmaker odds | **1,958 ± 30** | 1,941–1,974 | 1,905 | 1,979 | 5 |
+| **Two-stage model with odds, playing chips** | **2,039 ± 35** | 2,020–2,059 | 1,975 | 2,053 | 3.5 |
+| Two-stage model, with bookmaker odds | 1,958 ± 30 | 1,941–1,974 | 1,905 | 1,979 | 5 |
 | Two-stage model, without odds | 1,921 ± 72 | 1,881–1,960 | 1,763 | 1,947 | 7 |
 | Two-stage model with odds, 5-seed ensemble | 1,933 ± 51 | 1,905–1,961 | 1,817 | 1,950 | 4 |
 | 3-GW rolling average (baseline) | 1,807 | — | — | 1,947 | 35 |
@@ -73,8 +75,14 @@ baselines are deterministic.
 
 How to read this honestly:
 
-- **The model beats the baseline in all 15 seeds**, by 151 points on average.
-  Without odds it does so in 14 of 15.
+- **Chips are worth 82 points a season** (95% CI 57–107; ahead in 14 of 15
+  seeds, paired t-test p < 0.001). The second half shows the textbook timings
+  without being told them: Free Hit in GW33, Bench Boost in GW26 or GW35–36,
+  Wildcard the week before. The first half does not: copies bunch into GW15–18
+  as their GW19 expiry comes into view, which is a four-week horizon spending
+  what it would otherwise lose rather than timing it.
+- **The model beats the baseline in all 15 seeds**, by 151 points on average
+  before chips. Without odds it does so in 14 of 15.
 - **Odds buy reliability more than points.** The spread shrinking from ±72 to
   ±30 is significant (Levene p = 0.01); the +37 mean gain is not (Welch
   p = 0.08).
@@ -85,8 +93,8 @@ How to read this honestly:
   spreads no less, which says the run-to-run spread is the season's path
   dependence, not model noise. Five-run estimates of that spread were off by up
   to 2x, which is why the table uses 15.
-- **About 51 points a gameweek with no chips and no team news.** Real managers
-  have two of each chip and read press conferences. Without the 2025-26 average
+- **About 54 points a gameweek with chips and no team news.** Real managers
+  read press conferences. Without the 2025-26 average
   manager score per gameweek (the FPL API only serves the current season) there
   is no comparison to the field here; pass one in with
   `--benchmark-csv gameweek,average_points` to add it.
@@ -99,6 +107,7 @@ Reproduce (about two minutes per seed, so roughly half an hour for 15; each
 seed is independent, so runs can be split across processes):
 
 ```bash
+python fpl_season_sim.py --seeds $(seq 1 15) --chips -o sim_results/chips   # headline row
 python fpl_season_sim.py --seeds $(seq 1 15)                  # writes sim_results/
 python fpl_season_sim.py --seeds $(seq 1 15) --no-odds        # ablation row
 python fpl_season_sim.py --seeds $(seq 1 15) --ensemble 5     # ensemble row
@@ -589,8 +598,11 @@ Documented because they are real, not because they are hypothetical.
 - **Team ratings are venue-agnostic.** One attack and one defence rating per
   club; the home/away effect is left to interact with `was_home` rather than
   being modelled with separate splits.
-- **No chips.** The transfer solver plans free transfers and hits over a rolling
-  horizon, but Wildcard, Free Hit, Bench Boost and Triple Captain are not modelled.
+- **Chips are timed within the horizon only.** The solver plays a chip when its
+  projected gain beats a fixed reserve value, or when the copy expires inside
+  the four-week horizon. It cannot see a double gameweek further out, so
+  first-half chips tend to be spent just before GW19 rather than placed. Free
+  Hit is only ever considered for the coming week.
 
 ---
 
@@ -619,8 +631,6 @@ should do more for real accuracy than any further feature work.
 - **Ranking metrics as first-class citizens:** per-gameweek Spearman ρ and
   top-15 capture rate written to `evaluation_summary.csv` alongside MAE/RMSE.
 - **Venue-split team ratings** and an opponent-adjusted `expected_assists`.
-- **Chip strategy:** Wildcard, Bench Boost, Triple Captain and Free Hit as
-  additional binary decisions in the multi-period program.
 - **Quantile / distributional forecasts** instead of point estimates, enabling
   risk-adjusted captaincy (a high-variance differential vs a safe floor).
 

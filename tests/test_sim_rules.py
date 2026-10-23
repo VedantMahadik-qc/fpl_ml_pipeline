@@ -82,3 +82,20 @@ def test_blank_bench_means_no_sub():
     assert result["auto_subs"] == []
     assert len(result["final_xi"]) == 11
     assert result["xi_points"] == 10 * 2.0
+
+
+def test_bench_boost_scores_all_fifteen_without_subs():
+    actual = everyone_plays()
+    actual[10] = (0.0, 0.0)                     # a starter blanks: no sub on Bench Boost
+    result = score_gameweek(make_squad(), actual, chip="bboost")
+    assert result["auto_subs"] == []
+    assert result["xi_points"] == 14 * 2.0      # fifteen players, one scored nothing
+    assert result["captain_points"] == 2.0
+
+
+def test_triple_captain_triples_the_armband():
+    actual = everyone_plays()
+    actual[30] = (10.0, 90.0)
+    result = score_gameweek(make_squad(), actual, chip="3xc")
+    assert result["captain_points"] == 20.0     # two extra multiples on top of the XI
+    assert result["gross_points"] == 10 * 2.0 + 10.0 + 20.0

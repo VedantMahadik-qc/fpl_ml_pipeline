@@ -75,9 +75,11 @@ Modelling simplifications, stated plainly
   need GW N+1 and N+2 results, which do not exist. Only the fixture varies
   across the horizon — opponent, venue, and the resulting difficulty. This is
   standard practice and is the main reason for the decay factor.
-* NO CHIPS. Wildcard, Bench Boost, Triple Captain and Free Hit are each an
-  additional binary per gameweek; `--wildcard` only means "ignore the starting
-  squad in week 1".
+* CHIPS ARE PLANNED WITHIN THE HORIZON ONLY. With --team-id the solver knows
+  which copies you still hold and plays one when its gain beats a fixed reserve
+  value (--chip-reserve), or when the copy expires inside the horizon. It cannot
+  see a double gameweek beyond the horizon, which is what the reserve stands in
+  for. `--wildcard` is separate: it means "build from scratch in week 1".
 * AVAILABILITY IS A WEEK-1 SNAPSHOT. A player injured today is excluded for the
   whole horizon even if he would return in week 4. An injured player you OWN
   stays in the pool at 0 points, so the plan can sell or bench him.
@@ -150,6 +152,29 @@ HIT_COST = 4.0                  # points per excess transfer
 HIT_TIEBREAK_EPSILON = 1e-3
 FT_TIEBREAK_EPSILON = 1e-4
 
+# FPL's chip names, as the API spells them.
+CHIP_NAMES = ("wildcard", "freehit", "bboost", "3xc")
+CHIP_LABELS = {"wildcard": "Wildcard", "freehit": "Free Hit", "bboost": "Bench Boost",
+               "3xc": "Triple Captain"}
+
+# Since 2025-26 every manager gets two of each chip, one per half of the season.
+# Live runs read the windows from bootstrap-static; this is the fallback and
+# what the season simulator plays with.
+STANDARD_CHIP_WINDOWS: Tuple[Tuple[str, int, int], ...] = (
+    ("wildcard", 2, 19), ("wildcard", 20, 38),
+    ("freehit", 2, 19), ("freehit", 20, 38),
+    ("bboost", 1, 19), ("bboost", 20, 38),
+    ("3xc", 1, 19), ("3xc", 20, 38),
+)
+
+# What holding a chip is worth, in projected points: the solver only plays one
+# when the gain beats keeping it for a better week. Set before looking at any
+# replay, from the scale of a typical projected week: a bench of ~10, a captain
+# of ~5. A copy whose window ends inside the horizon is free to use.
+DEFAULT_CHIP_RESERVE: Dict[str, float] = {
+    "wildcard": 20.0, "freehit": 15.0, "bboost": 12.0, "3xc": 6.0,
+}
+
 
 @dataclass
 class TransferConfig:
@@ -175,6 +200,10 @@ class TransferConfig:
     time_limit: Optional[int] = 120
     solver_msg: bool = False
     output_path: Optional[Path] = None
+    # Unused chip copies as (name, first GW, last GW); empty means no chips.
+    chip_windows: Sequence[Tuple[str, int, int]] = ()
+    use_chips: bool = True            # with --team-id, plan chips you still hold
+    chip_reserve: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_CHIP_RESERVE))
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -183,9 +212,11 @@ class TransferConfig:
 # --------------------------------------------------------------------------- #
 
 def load_squad_state(config: TransferConfig, client=None
-                     ) -> Tuple[List[int], float, int, Dict[int, float]]:
+                     ) -> Tuple[List[int], float, int, Dict[int, float],
+                                List[Tuple[str, int]]]:
     """
-    Resolve (squad element ids, bank in £m, free transfers, purchase prices) for t = 0.
+    Resolve (squad element ids, bank in £m, free transfers, purchase prices, chips
+    played) for t = 0.
 
     Sources, in priority order: --wildcard, --squad-json, --team-id (live API),
     then the explicit --squad / --bank / --free-transfers flags. Purchase prices
@@ -194,7 +225,7 @@ def load_squad_state(config: TransferConfig, client=None
     """
     if config.wildcard:
         LOGGER.info("Wildcard mode: no starting squad, week 1 is a free selection.")
-        return [], config.budget, MAX_FREE_TRANSFERS, {}
+        return [], config.budget, MAX_FREE_TRANSFERS, {}, []
 
     if config.squad_json:
         payload = json.loads(Path(config.squad_json).read_text(encoding="utf-8"))
@@ -203,7 +234,7 @@ def load_squad_state(config: TransferConfig, client=None
         free = int(payload.get("free_transfers", config.free_transfers or 1))
         LOGGER.info("Loaded squad state from %s: %d players, bank %.1f, %d FT.",
                     config.squad_json, len(squad), bank, free)
-        return squad, bank, free, {}
+        return squad, bank, free, {}, []
 
     if config.entry_id and client is not None:
         state = fetch_entry_state(client, config.entry_id, config.features_path)
@@ -211,14 +242,34 @@ def load_squad_state(config: TransferConfig, client=None
             LOGGER.info("Using --free-transfers %d instead of the derived %d.",
                         config.free_transfers, state["free"])
             state["free"] = config.free_transfers
-        return state["squad"], state["bank"], state["free"], state["purchase_prices"]
+        return (state["squad"], state["bank"], state["free"], state["purchase_prices"],
+                state["chips_used"])
 
     squad = [int(i) for i in config.current_squad]
     free = config.free_transfers if config.free_transfers is not None else 1
     if squad:
         LOGGER.info("Using squad from --squad: %d players, bank %.1f, %d FT.",
                     len(squad), config.current_bank, free)
-    return squad, config.current_bank, free, {}
+    return squad, config.current_bank, free, {}, []
+
+
+def chip_rules(bootstrap: Optional[Dict[str, Any]]) -> List[Tuple[str, int, int]]:
+    """Every chip copy this season as (name, first GW, last GW), from bootstrap-static."""
+    rules = [(c["name"], int(c["start_event"]), int(c["stop_event"]))
+             for c in (bootstrap or {}).get("chips", [])
+             if c.get("name") in CHIP_NAMES and c.get("start_event") and c.get("stop_event")]
+    return rules or list(STANDARD_CHIP_WINDOWS)
+
+
+def available_chip_windows(rules: Sequence[Tuple[str, int, int]],
+                           used: Sequence[Tuple[str, int]]) -> List[Tuple[str, int, int]]:
+    """Copies not yet played: each chip played uses the copy whose window holds its GW."""
+    remaining = list(rules)
+    for name, event in used:
+        spent = next((w for w in remaining if w[0] == name and w[1] <= event <= w[2]), None)
+        if spent is not None:
+            remaining.remove(spent)
+    return remaining
 
 
 def replay_free_transfers(history: Dict[str, Any]) -> Tuple[int, List[str]]:
@@ -338,8 +389,12 @@ def fetch_entry_state(client, entry_id: int,
     LOGGER.info("Entry %s (GW%s): %d players, bank %.1f, %d free transfer(s) for the "
                 "next deadline; purchase prices known for %d/%d.",
                 entry_id, event, len(squad), bank, free, len(paid), len(squad))
+    chips_used = [(c["name"], int(c["event"])) for c in history.get("chips", [])]
+    if chips_used:
+        LOGGER.info("Chips played: %s", ", ".join(
+            f"{CHIP_LABELS.get(n, n)} GW{e}" for n, e in sorted(chips_used, key=lambda c: c[1])))
     return {"squad": squad, "bank": bank, "free": free, "purchase_prices": paid,
-            "event": event}
+            "chips_used": chips_used, "event": event}
 
 
 # --------------------------------------------------------------------------- #
@@ -656,7 +711,20 @@ def diagnose_infeasibility(
 # --------------------------------------------------------------------------- #
 
 class MultiPeriodOptimizer:
-    """Rolling H-week squad plan with a real transfer economy."""
+    """
+    Rolling H-week squad plan with a real transfer economy and the four chips.
+
+    Chips, when `config.chip_windows` lists unused copies:
+      * Wildcard     unlimited transfers that week, no hits, FT bank kept
+      * Free Hit     a separate one-week squad z[i,t], legal and within the
+                     squad's selling value plus bank; the persistent squad
+                     x[i,t] stands still and returns the next week
+      * Bench Boost  the four bench players score in full
+      * Triple Capt. the captain scores three times instead of twice
+    At most one chip per gameweek, each copy only inside its window. Playing a
+    chip costs `config.chip_reserve[name]`, the value of keeping it for a later
+    week, except where its window ends inside the horizon (use it or lose it).
+    """
 
     def __init__(self, projections: pd.DataFrame, squad: Sequence[int],
                  bank: float, free_transfers: int, config: TransferConfig) -> None:
@@ -692,8 +760,17 @@ class MultiPeriodOptimizer:
         self.bank0 = float(bank)
         self.ft0 = int(np.clip(free_transfers, 0, MAX_FREE_TRANSFERS))
 
+        # A fresh build (no starting squad) is not the Wildcard chip; it is how
+        # GW1 or a manual --wildcard starts, and it cannot also play chips in
+        # its first week.
+        self.fresh_build = not self.initial_squad
+        self.windows = [w for w in (tuple(w) for w in config.chip_windows)
+                        if w[0] in CHIP_NAMES
+                        and any(w[1] <= t <= w[2] for t in self.gameweeks)]
+
         self.problem: Optional[pulp.LpProblem] = None
         self.x: Dict = {}
+        self.z: Dict = {}
         self.s: Dict = {}
         self.c: Dict = {}
         self.tin: Dict = {}
@@ -702,6 +779,33 @@ class MultiPeriodOptimizer:
         self.hits: Dict = {}
         self.hit_active: Dict = {}
         self.bank: Dict = {}
+        self.chip: Dict[str, Dict[int, Any]] = {name: {} for name in CHIP_NAMES}
+
+    # -- chips ---------------------------------------------------------------
+    def _chip_weeks(self, name: str) -> List[int]:
+        weeks = [t for t in self.gameweeks
+                 if any(w[0] == name and w[1] <= t <= w[2] for w in self.windows)]
+        # A Wildcard or Free Hit on top of a from-scratch build means nothing.
+        if (self.fresh_build and name in ("wildcard", "freehit")
+                and weeks and weeks[0] == self.gameweeks[0]):
+            weeks = weeks[1:]
+        # A Free Hit needs a second, one-week squad, which doubles the hardest
+        # part of the model. Only week 1 of a plan is ever executed, so it is
+        # offered there alone and reconsidered at every deadline.
+        if name == "freehit":
+            weeks = [t for t in weeks if t == self.gameweeks[0]]
+        return weeks
+
+    def _reserve(self, name: str, t: int) -> float:
+        """Opportunity cost of playing `name` in week t: zero if its copy expires in view."""
+        last = self.gameweeks[-1]
+        expiring = any(w[0] == name and w[1] <= t <= w[2] and w[2] <= last
+                       for w in self.windows)
+        return 0.0 if expiring else float(self.config.chip_reserve.get(name, 0.0))
+
+    def _use(self, name: str, t: int):
+        """The chip's binary for week t, or 0 when it cannot be played then."""
+        return self.chip[name].get(t, 0)
 
     # -- build ---------------------------------------------------------------
     def build(self) -> pulp.LpProblem:
@@ -709,6 +813,7 @@ class MultiPeriodOptimizer:
         cost = self.players["cost"].to_dict()
         position = self.players["position"].to_dict()
         club = self.players["team"].to_dict()
+        clubs = sorted({str(club[i]) for i in ids})
         points = lambda i, t: self.points.get((i, t), 0.0)  # noqa: E731
 
         problem = pulp.LpProblem("FPL_MultiPeriod_Transfers", pulp.LpMaximize)
@@ -725,15 +830,53 @@ class MultiPeriodOptimizer:
         self.hit_active = pulp.LpVariable.dicts("hit_active", weeks, cat=pulp.LpBinary)
         self.bank = pulp.LpVariable.dicts("bank", weeks, lowBound=0, cat=pulp.LpContinuous)
 
-        # ---- 5. time-decayed objective ----
+        for name in CHIP_NAMES:
+            for t in self._chip_weeks(name):
+                self.chip[name][t] = pulp.LpVariable(f"chip_{name}_{t}", cat=pulp.LpBinary)
+        free_hit_weeks = set(self.chip["freehit"])
+
+        # The squad that plays each week. Equal to x except in a Free Hit week,
+        # where it is a fresh legal 15 and x carries the real squad through.
+        self.z = {i: {} for i in ids}
+        for t in weeks:
+            for i in ids:
+                self.z[i][t] = (pulp.LpVariable(f"play_{i}_{t}", cat=pulp.LpBinary)
+                                if t in free_hit_weeks else self.x[i][t])
+
+        # Bench Boost and Triple Captain, one continuous gain per week: the
+        # gain is at most the week's bench (or captain) points and at most a
+        # tight bound times the chip binary. Both only ever add points, so the
+        # upper bounds pin them. Per-player products would be exact too, but
+        # cost a variable per player-week and slow the solve tenfold.
+        bench_gain, captain_gain = {}, {}
+        for t in self.chip["bboost"]:
+            top = sorted((points(i, t) for i in ids), reverse=True)
+            bound = sum(top[:SQUAD_SIZE - STARTING_XI])
+            g = pulp.LpVariable(f"bb_gain_{t}", lowBound=0, upBound=bound)
+            problem += g <= pulp.lpSum(points(i, t) * (self.z[i][t] - self.s[i][t])
+                                       for i in ids), f"bb_bench_{t}"
+            problem += g <= bound * self.chip["bboost"][t], f"bb_on_{t}"
+            bench_gain[t] = g
+        for t in self.chip["3xc"]:
+            bound = max((points(i, t) for i in ids), default=0.0)
+            g = pulp.LpVariable(f"tc_gain_{t}", lowBound=0, upBound=bound)
+            problem += g <= pulp.lpSum(points(i, t) * self.c[i][t] for i in ids),                 f"tc_captain_{t}"
+            problem += g <= bound * self.chip["3xc"][t], f"tc_on_{t}"
+            captain_gain[t] = g
+
+        # ---- time-decayed objective ----
         gamma, w_b = self.config.decay, self.config.bench_weight
         weekly = []
         for index, t in enumerate(weeks):
             discount = gamma ** index
             weekly.append(discount * (
                 pulp.lpSum(points(i, t) * (self.s[i][t] + self.c[i][t]) for i in ids)
-                + w_b * pulp.lpSum(points(i, t) * (self.x[i][t] - self.s[i][t]) for i in ids)
+                + w_b * pulp.lpSum(points(i, t) * (self.z[i][t] - self.s[i][t]) for i in ids)
+                + (1 - w_b) * bench_gain.get(t, 0)
+                + captain_gain.get(t, 0)
                 - HIT_COST * self.hits[t]
+                - pulp.lpSum(self._reserve(name, t) * self.chip[name][t]
+                             for name in CHIP_NAMES if t in self.chip[name])
             ))
         # Tie-breakers. The FT reward is what makes `FT[t] <= ...` bind: without
         # it FT carries no objective weight in any week where no transfer is
@@ -744,23 +887,32 @@ class MultiPeriodOptimizer:
                     + FT_TIEBREAK_EPSILON * pulp.lpSum(self.ft[t] for t in weeks)
                     ), "discounted_expected_points"
 
-        # ---- per-week squad legality (Phase 4 constraints, replicated over t) ----
-        for t in weeks:
-            problem += pulp.lpSum(self.x[i][t] for i in ids) == SQUAD_SIZE, f"squad_size_{t}"
-
+        def legal_fifteen(squad, t: int, tag: str) -> None:
+            problem.addConstraint(pulp.lpSum(squad[i][t] for i in ids) == SQUAD_SIZE,
+                                  f"{tag}_size_{t}")
             for pos, quota in SQUAD_QUOTA.items():
-                members = [i for i in ids if position[i] == pos]
-                problem += pulp.lpSum(self.x[i][t] for i in members) == quota, \
-                    f"squad_{pos}_{t}"
+                problem.addConstraint(
+                    pulp.lpSum(squad[i][t] for i in ids if position[i] == pos) == quota,
+                    f"{tag}_{pos}_{t}")
+            for name in clubs:
+                problem.addConstraint(
+                    pulp.lpSum(squad[i][t] for i in ids if str(club[i]) == name)
+                    <= MAX_PER_CLUB, f"{tag}_club_{_safe(name)}_{t}")
 
-            for name in sorted({str(club[i]) for i in ids}):
-                members = [i for i in ids if str(club[i]) == name]
-                problem += pulp.lpSum(self.x[i][t] for i in members) <= MAX_PER_CLUB, \
-                    f"club_{_safe(name)}_{t}"
+        # ---- per-week squad legality, XI and captaincy ----
+        for t in weeks:
+            legal_fifteen(self.x, t, "squad")
+            if t in free_hit_weeks:
+                legal_fifteen(self.z, t, "play")
+                fh = self.chip["freehit"][t]
+                for i in ids:
+                    # z == x unless the Free Hit is on.
+                    problem += self.z[i][t] - self.x[i][t] <= fh, f"fh_up_{i}_{t}"
+                    problem += self.x[i][t] - self.z[i][t] <= fh, f"fh_down_{i}_{t}"
 
             problem += pulp.lpSum(self.s[i][t] for i in ids) == STARTING_XI, f"xi_{t}"
             for i in ids:
-                problem += self.s[i][t] <= self.x[i][t], f"start_in_squad_{i}_{t}"
+                problem += self.s[i][t] <= self.z[i][t], f"start_in_squad_{i}_{t}"
                 problem += self.c[i][t] <= self.s[i][t], f"captain_starts_{i}_{t}"
 
             for pos, (low, high) in FORMATION_BOUNDS.items():
@@ -769,8 +921,16 @@ class MultiPeriodOptimizer:
                 problem += pulp.lpSum(self.s[i][t] for i in members) <= high, f"fmax_{pos}_{t}"
 
             problem += pulp.lpSum(self.c[i][t] for i in ids) == 1, f"one_captain_{t}"
+            problem += pulp.lpSum(self._use(name, t) for name in CHIP_NAMES) <= 1, \
+                f"one_chip_{t}"
 
-        # ---- 3. the transfer engine ----
+        # ---- chip copies: each window's copy at most once ----
+        for k, (name, start, stop) in enumerate(self.windows):
+            in_window = [self.chip[name][t] for t in self.chip[name] if start <= t <= stop]
+            if in_window:
+                problem += pulp.lpSum(in_window) <= 1, f"chip_window_{name}_{k}"
+
+        # ---- the transfer engine ----
         for index, t in enumerate(weeks):
             previous = weeks[index - 1] if index else None
             for i in ids:
@@ -784,33 +944,38 @@ class MultiPeriodOptimizer:
                 # for nothing; forbid it rather than trusting the objective.
                 problem += self.tin[i][t] + self.tout[i][t] <= 1, f"no_churn_{i}_{t}"
 
-        # ---- 4. free-transfer bank and hits ----
-        wildcard = not self.initial_squad
+        # ---- free-transfer bank and hits ----
+        big_m = SQUAD_SIZE + MAX_FREE_TRANSFERS + 1
         for index, t in enumerate(weeks):
             made = pulp.lpSum(self.tin[i][t] for i in ids)
+            wc, fh = self._use("wildcard", t), self._use("freehit", t)
 
             if index == 0:
                 problem += self.ft[t] == self.ft0, f"ft_initial_{t}"
             else:
                 previous = weeks[index - 1]
                 problem += self.ft[t] <= MAX_FREE_TRANSFERS, f"ft_cap_{t}"
-                if index == 1 and wildcard:
-                    # A wildcard rebuild is not 15 transfers. Feeding those into
-                    # the recursion drives FT to 5 - 15 + 1 = -9, below its lower
-                    # bound, and the whole model goes infeasible. After a
-                    # wildcard you simply start the next week with one FT.
-                    problem += self.ft[t] == 1, f"ft_after_wildcard_{t}"
+                if index == 1 and self.fresh_build:
+                    # A fresh build is not 15 transfers. Feeding those into the
+                    # recursion drives FT to 5 - 15 + 1 = -9, below its lower
+                    # bound, and the whole model goes infeasible. After a fresh
+                    # build you simply start the next week with one FT.
+                    problem += self.ft[t] == 1, f"ft_after_build_{t}"
                 else:
                     made_prev = pulp.lpSum(self.tin[i][previous] for i in ids)
-                    # FT[t] <= 5  and  FT[t] <= FT[t-1] - n[t-1] + h[t-1] + 1.
-                    # Upper bounds only: the FT tie-break reward makes the solver
-                    # push FT up, so these bind and reproduce min() exactly.
+                    chip_prev = self._use("wildcard", previous) + self._use("freehit", previous)
+                    # FT[t] <= FT[t-1] - n[t-1] + h[t-1] + 1, relaxed in a Wildcard
+                    # or Free Hit week, whose transfers spend nothing; FT[t] <=
+                    # FT[t-1] + 1 always, so those weeks still bank exactly one.
+                    # Upper bounds only: the FT tie-break reward pushes FT up,
+                    # so these bind and reproduce min() exactly.
                     problem += (self.ft[t] <= self.ft[previous] - made_prev
-                                + self.hits[previous] + 1), f"ft_roll_{t}"
+                                + self.hits[previous] + 1 + big_m * chip_prev), f"ft_roll_{t}"
+                    problem += self.ft[t] <= self.ft[previous] + 1, f"ft_step_{t}"
 
-            if index == 0 and wildcard:
+            if index == 0 and self.fresh_build:
                 # Same reason: the 15 opening picks are free, not hits.
-                problem += self.hits[t] == 0, f"wildcard_no_hits_{t}"
+                problem += self.hits[t] == 0, f"build_no_hits_{t}"
             else:
                 # Pin h[t] = max(0, n[t] - FT[t]) EXACTLY, with an indicator.
                 #
@@ -821,14 +986,18 @@ class MultiPeriodOptimizer:
                 # 1.0 that trade is exactly neutral in the main objective and any
                 # tie-break on FT tips it positive. A test at decay 1.0 caught
                 # the solver doing precisely this. Two constraints and one binary
-                # per week close it off for good.
-                big_m = self.config.max_transfers_per_week + MAX_FREE_TRANSFERS + 1
+                # per week close it off for good. A Wildcard lifts the lower
+                # bound and pins hits to zero.
                 y = self.hit_active[t]
-                problem += self.hits[t] >= made - self.ft[t], f"hits_lb_{t}"
+                problem += self.hits[t] >= made - self.ft[t] - big_m * wc, f"hits_lb_{t}"
                 problem += self.hits[t] <= made - self.ft[t] + big_m * (1 - y), \
                     f"hits_ub_active_{t}"
                 problem += self.hits[t] <= big_m * y, f"hits_ub_zero_{t}"
-                problem += made <= self.config.max_transfers_per_week, f"max_transfers_{t}"
+                problem += self.hits[t] <= big_m * (1 - wc), f"hits_wildcard_{t}"
+                problem += made <= self.config.max_transfers_per_week + SQUAD_SIZE * wc, \
+                    f"max_transfers_{t}"
+                # A Free Hit leaves the real squad alone that week.
+                problem += made <= SQUAD_SIZE * (1 - fh), f"fh_freeze_{t}"
 
         # ---- cash bank ----
         for index, t in enumerate(weeks):
@@ -837,16 +1006,26 @@ class MultiPeriodOptimizer:
             bought = pulp.lpSum(cost[i] * self.tin[i][t] for i in ids)
             problem += self.bank[t] == previous_bank + sold - bought, f"bank_{t}"
 
-        # Wildcard: no squad at t=0, so week 1 selection is bounded by the budget
-        # rather than by transfers. Every "transfer in" is a free pick.
-        if wildcard:
+            if t in free_hit_weeks:
+                # The Free Hit squad is bought with the real squad's selling
+                # value plus the bank. x[t] == x[t-1] in that week, so this is
+                # what the manager could raise at the deadline.
+                budget_m = float(sum(sorted(cost.values())[-SQUAD_SIZE:])) + 100.0
+                problem += (pulp.lpSum(cost[i] * self.z[i][t] for i in ids)
+                            <= self.bank[t] + pulp.lpSum(cost[i] * self.x[i][t] for i in ids)
+                            + budget_m * (1 - self.chip["freehit"][t])), f"fh_budget_{t}"
+
+        # Fresh build: no squad at t=0, so week 1 selection is bounded by the
+        # budget rather than by transfers. Every "transfer in" is a free pick.
+        if self.fresh_build:
             first = weeks[0]
             problem += (pulp.lpSum(cost[i] * self.x[i][first] for i in ids)
-                        <= self.config.budget), "wildcard_budget"
+                        <= self.config.budget), "build_budget"
 
         self.problem = problem
-        LOGGER.info("Built multi-period MILP: %d variables, %d constraints, %d gameweeks.",
-                    len(problem.variables()), len(problem.constraints), self.horizon)
+        LOGGER.info("Built multi-period MILP: %d variables, %d constraints, %d gameweeks%s.",
+                    len(problem.variables()), len(problem.constraints), self.horizon,
+                    f", chips {sorted({w[0] for w in self.windows})}" if self.windows else "")
         return problem
 
     # -- solve ---------------------------------------------------------------
@@ -877,45 +1056,58 @@ class MultiPeriodOptimizer:
     def extract(self) -> Dict[str, Any]:
         """Unpack the solution into a per-gameweek plan and validate it."""
         plan: List[Dict[str, Any]] = []
+        on = lambda v: (v.value() if hasattr(v, "value") else v) > 0.5  # noqa: E731
+        # Sorted by position so the report pairs like with like: squad quotas
+        # are fixed, so every week sells and buys the same position mix.
+        by_position = lambda i: (POSITIONS.index(self.players.at[i, "position"]), i)  # noqa: E731
 
         for index, t in enumerate(self.gameweeks):
-            chosen = [i for i in self.ids if self.x[i][t].value() > 0.5]
+            chip = next((name for name in CHIP_NAMES if t in self.chip[name]
+                         and on(self.chip[name][t])), None)
+            persistent = [i for i in self.ids if on(self.x[i][t])]
+            chosen = [i for i in self.ids if on(self.z[i][t])]
             squad = self.players.loc[chosen].copy()
-            squad["is_starter"] = [self.s[i][t].value() > 0.5 for i in chosen]
-            squad["is_captain"] = [self.c[i][t].value() > 0.5 for i in chosen]
+            squad["is_starter"] = [on(self.s[i][t]) for i in chosen]
+            squad["is_captain"] = [on(self.c[i][t]) for i in chosen]
             squad["predicted_points"] = [self.points.get((i, t), 0.0) for i in chosen]
             squad["fixtures"] = [self.fixtures.get((i, t), "") for i in chosen]
             squad = squad.reset_index()
 
-            # Sorted by position so the report pairs like with like: squad quotas
-            # are fixed, so every week sells and buys the same position mix.
-            by_position = lambda i: (POSITIONS.index(self.players.at[i, "position"]), i)  # noqa: E731
-            transfers_in = sorted((i for i in self.ids if self.tin[i][t].value() > 0.5),
-                                  key=by_position)
-            transfers_out = sorted((i for i in self.ids if self.tout[i][t].value() > 0.5),
-                                   key=by_position)
+            transfers_in = sorted((i for i in self.ids if on(self.tin[i][t])), key=by_position)
+            transfers_out = sorted((i for i in self.ids if on(self.tout[i][t])), key=by_position)
+            if chip == "freehit":
+                # Shown as the week's swaps; the real squad returns next week.
+                transfers_in = sorted(set(chosen) - set(persistent), key=by_position)
+                transfers_out = sorted(set(persistent) - set(chosen), key=by_position)
 
             starters = squad[squad["is_starter"]]
+            bench = squad[~squad["is_starter"]]
             captain = squad[squad["is_captain"]]
             gw_points = float(starters["predicted_points"].sum())
-            captain_bonus = float(captain["predicted_points"].sum())
+            multiplier = 3 if chip == "3xc" else 2
+            captain_bonus = (multiplier - 1) * float(captain["predicted_points"].sum())
+            bench_points = float(bench["predicted_points"].sum()) if chip == "bboost" else 0.0
             hits = int(round(self.hits[t].value() or 0))
+            n_transfers = 0 if chip == "freehit" else len(transfers_in)
 
             plan.append({
                 "gameweek": t,
                 "discount": self.config.decay ** index,
+                "chip": chip,
                 "squad": squad,
+                "persistent_ids": persistent,
                 "transfers_in": self.players.loc[transfers_in, "player_name"].tolist(),
                 "transfers_out": self.players.loc[transfers_out, "player_name"].tolist(),
-                "n_transfers": len(transfers_in),
+                "n_transfers": n_transfers,
                 "free_transfers": int(round(self.ft[t].value() or 0)),
                 "hits": hits,
                 "hit_cost": HIT_COST * hits,
                 "bank": float(self.bank[t].value() or 0.0),
-                "squad_value": float(squad["cost"].sum()),
+                "squad_value": float(self.players.loc[persistent, "cost"].sum()),
                 "xi_points": gw_points,
                 "captain_bonus": captain_bonus,
-                "net_points": gw_points + captain_bonus - HIT_COST * hits,
+                "bench_boost_points": bench_points,
+                "net_points": gw_points + captain_bonus + bench_points - HIT_COST * hits,
             })
 
         validate_plan(plan, self)
@@ -930,10 +1122,10 @@ def validate_plan(plan: List[Dict[str, Any]], optimizer: MultiPeriodOptimizer) -
     """Re-check the solver's answer against the FPL rules, week by week."""
     previous_ids: Optional[set] = optimizer.initial_squad or None
     ft = optimizer.ft0
-    wildcard = not optimizer.initial_squad
+    windows_used: Dict[Tuple[str, int, int], int] = {}
 
     for index, week in enumerate(plan):
-        squad, t = week["squad"], week["gameweek"]
+        squad, t, chip = week["squad"], week["gameweek"], week["chip"]
         assert len(squad) == SQUAD_SIZE, f"GW{t}: {len(squad)} players"
 
         counts = squad["position"].value_counts().to_dict()
@@ -949,6 +1141,14 @@ def validate_plan(plan: List[Dict[str, Any]], optimizer: MultiPeriodOptimizer) -
         assert squad["team"].value_counts().max() <= MAX_PER_CLUB, f"GW{t}: club quota"
         assert int(squad["is_captain"].sum()) == 1, f"GW{t}: captain count"
         assert week["bank"] >= -1e-6, f"GW{t}: negative bank {week['bank']:.2f}"
+        assert len(week["persistent_ids"]) == SQUAD_SIZE, f"GW{t}: persistent squad size"
+
+        if chip:
+            window = next((w for w in optimizer.windows if w[0] == chip and w[1] <= t <= w[2]),
+                          None)
+            assert window is not None, f"GW{t}: {chip} played outside its window"
+            windows_used[window] = windows_used.get(window, 0) + 1
+            assert windows_used[window] == 1, f"GW{t}: {chip} copy {window} played twice"
 
         # The FT bank is checked directly, not just via hits. It is driven to its
         # bound by a tie-break reward rather than an equality constraint, so if
@@ -957,24 +1157,31 @@ def validate_plan(plan: List[Dict[str, Any]], optimizer: MultiPeriodOptimizer) -
         assert week["free_transfers"] == ft, (
             f"GW{t}: FT bank reports {week['free_transfers']}, the rules give {ft}")
 
-        # Transfer accounting must reconcile with the squad delta.
-        current_ids = set(squad["player_id"])
+        # Transfer accounting must reconcile with the persistent squad delta.
+        current_ids = set(week["persistent_ids"])
+        free_week = chip in ("wildcard", "freehit")
         if previous_ids is not None:
             actual_in = len(current_ids - previous_ids)
-            assert actual_in == week["n_transfers"], (
-                f"GW{t}: {actual_in} new players but {week['n_transfers']} transfers booked")
-            expected_hits = max(0, week["n_transfers"] - ft)
+            if chip == "freehit":
+                assert actual_in == 0, f"GW{t}: Free Hit week changed the real squad"
+            else:
+                assert actual_in == week["n_transfers"], (
+                    f"GW{t}: {actual_in} new players but {week['n_transfers']} transfers booked")
+            expected_hits = 0 if free_week else max(0, week["n_transfers"] - ft)
             assert week["hits"] == expected_hits, (
                 f"GW{t}: {week['hits']} hits booked, rules give {expected_hits} "
                 f"({week['n_transfers']} transfers vs {ft} FT)")
         previous_ids = current_ids
 
-        if index == 0 and wildcard:
-            ft = 1                       # a wildcard rebuild does not spend FTs
+        if index == 0 and optimizer.fresh_build:
+            ft = 1                       # a fresh build does not spend FTs
+        elif free_week:
+            ft = min(MAX_FREE_TRANSFERS, ft + 1)
         else:
             ft = min(MAX_FREE_TRANSFERS, max(0, ft - week["n_transfers"]) + 1)
 
-    LOGGER.info("Plan validated: squad legality, transfer accounting and FT bank all consistent.")
+    LOGGER.info("Plan validated: squad legality, transfer accounting, FT bank and chips "
+                "all consistent.")
 
 
 # --------------------------------------------------------------------------- #
@@ -1012,8 +1219,21 @@ def print_plan(result: Dict[str, Any], config: TransferConfig) -> None:
                   f"   value {week['squad_value']:.1f}")
         print(header)
 
+        chip = week.get("chip")
+        if chip:
+            note = {
+                "wildcard": "unlimited free transfers this week",
+                "freehit": "a one-week squad; your real squad returns next week",
+                "bboost": f"bench scores too (+{week.get('bench_boost_points', 0):.2f})",
+                "3xc": "captain scores triple",
+            }[chip]
+            print(f"   CHIP  {CHIP_LABELS[chip]}: {note}")
+
         if is_build:
             print(f"   Initial 15-man squad — {SQUAD_SIZE} free picks, no hits.")
+        elif chip == "freehit":
+            for out_name, in_name in zip(week["transfers_out"], week["transfers_in"]):
+                print(f"   OUT  {out_name:<28} ->  IN  {in_name}   (this week only)")
         elif week["transfers_out"] or week["transfers_in"]:
             for out_name, in_name in zip(week["transfers_out"] + [""] * 5,
                                          week["transfers_in"] + [""] * 5):
@@ -1065,6 +1285,7 @@ def plan_to_frame(plan: List[Dict[str, Any]]) -> pd.DataFrame:
                 "is_starter": row.is_starter,
                 "is_captain": row.is_captain,
                 "fixtures": getattr(row, "fixtures", ""),
+                "gw_chip": week.get("chip") or "",
                 "gw_transfers": week["n_transfers"],
                 "gw_hits": week["hits"],
                 "gw_free_transfers": week["free_transfers"],
@@ -1083,7 +1304,12 @@ def run(config: TransferConfig) -> Dict[str, Any]:
         from fpl_live_inference import LiveConfig, make_client
         client = make_client(LiveConfig(model_dir=config.model_dir))
 
-    squad, bank, free, purchase = load_squad_state(config, client)
+    squad, bank, free, purchase, chips_used = load_squad_state(config, client)
+    if config.entry_id and client is not None and config.use_chips:
+        config.chip_windows = available_chip_windows(chip_rules(client.fetch_bootstrap()),
+                                                     chips_used)
+        LOGGER.info("Chips still available: %s", ", ".join(
+            f"{CHIP_LABELS[n]} (GW{a}-{b})" for n, a, b in config.chip_windows) or "none")
 
     # Fresh start / wildcard detection. No squad at t=0 means there is nothing
     # to transfer FROM, so week 1 is an unconstrained legal build: x[i,1] is set
@@ -1163,6 +1389,17 @@ def plan_transfers(projections: pd.DataFrame, squad: Sequence[int], bank: float,
     return optimizer.extract()
 
 
+def parse_chip_reserve(items: Sequence[str]) -> Dict[str, float]:
+    """['bboost=8', '3xc=5'] -> {'bboost': 8.0, '3xc': 5.0}."""
+    reserve: Dict[str, float] = {}
+    for item in items:
+        name, _, value = item.partition("=")
+        if name not in CHIP_NAMES or not value:
+            raise SystemExit(f"--chip-reserve wants CHIP=PTS with CHIP in {CHIP_NAMES}: {item}")
+        reserve[name] = float(value)
+    return reserve
+
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FPL V3 multi-period transfer solver.")
     parser.add_argument("-i", "--input", default="fpl_ml_features.csv")
@@ -1197,6 +1434,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                               help="Top-N players per position kept for the solver")
     solver_group.add_argument("--time-limit", type=int, default=120)
     solver_group.add_argument("--solver-msg", action="store_true")
+    solver_group.add_argument("--no-chips", action="store_true",
+                              help="Plan without Wildcard/Free Hit/Bench Boost/Triple Captain")
+    solver_group.add_argument("--chip-reserve", nargs="+", default=[], metavar="CHIP=PTS",
+                              help="Points a chip must beat to be played, e.g. bboost=8 3xc=5 "
+                                   f"(defaults: {DEFAULT_CHIP_RESERVE})")
 
     parser.add_argument("--allow-status", nargs="+", default=["a"])
     parser.add_argument("--min-chance", type=int, default=0)
@@ -1236,6 +1478,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         time_limit=args.time_limit,
         solver_msg=args.solver_msg,
         output_path=Path(args.output) if args.output else None,
+        use_chips=not args.no_chips,
+        chip_reserve={**DEFAULT_CHIP_RESERVE, **parse_chip_reserve(args.chip_reserve)},
     )
 
     try:
