@@ -496,10 +496,19 @@ def diagnose_infeasibility(
                 if counts.get(position, 0) != quota:
                     problems.append(
                         f"your squad has {counts.get(position, 0)} {position}, expected {quota}")
+            # Over the club quota is fixable — a mid-season move can put a 4th
+            # player at one club, and FPL makes you sell one — so it is not an
+            # infeasibility as long as a transfer is allowed this week.
             worst = owned["team"].value_counts()
             if not worst.empty and worst.max() > MAX_PER_CLUB:
-                problems.append(
-                    f"your squad has {worst.max()} players from {worst.idxmax()}, max {MAX_PER_CLUB}")
+                if config.max_transfers_per_week < worst.max() - MAX_PER_CLUB:
+                    problems.append(
+                        f"your squad has {worst.max()} players from {worst.idxmax()}, "
+                        f"max {MAX_PER_CLUB}")
+                else:
+                    LOGGER.warning("Squad has %d players from %s; this week's plan must "
+                                   "sell down to %d.", worst.max(), worst.idxmax(),
+                                   MAX_PER_CLUB)
 
     return problems
 
@@ -946,7 +955,25 @@ def run(config: TransferConfig) -> Dict[str, Any]:
         free = MAX_FREE_TRANSFERS
 
     projections = load_projections(config)
+    result = plan_transfers(projections, squad, bank, free, config)
 
+    if config.output_path:
+        path = Path(config.output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        plan_to_frame(result["plan"]).to_csv(path, index=False)
+        LOGGER.info("Wrote plan to %s", path)
+
+    return result
+
+
+def plan_transfers(projections: pd.DataFrame, squad: Sequence[int], bank: float,
+                   free: int, config: TransferConfig) -> Dict[str, Any]:
+    """
+    Prune, check feasibility, build, solve and validate one H-week plan.
+
+    Split out of `run()` so the season simulator can call it with in-memory
+    projections. An empty `squad` with `config.wildcard` set is a fresh build.
+    """
     # Widen the pool until the problem is provably feasible, rather than letting
     # CBC discover it and report a bare "Infeasible".
     pruned = None
@@ -968,15 +995,7 @@ def run(config: TransferConfig) -> Dict[str, Any]:
     optimizer = MultiPeriodOptimizer(pruned, squad, bank, free, config)
     optimizer.build()
     optimizer.solve()
-    result = optimizer.extract()
-
-    if config.output_path:
-        path = Path(config.output_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        plan_to_frame(result["plan"]).to_csv(path, index=False)
-        LOGGER.info("Wrote plan to %s", path)
-
-    return result
+    return optimizer.extract()
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
