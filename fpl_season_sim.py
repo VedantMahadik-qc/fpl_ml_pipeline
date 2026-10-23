@@ -111,6 +111,7 @@ class SimConfig:
     seeds: Sequence[int] = (42,)
     ensemble_size: int = 1            # seeds averaged inside each model
     chips: bool = False               # play Wildcard/Free Hit/Bench Boost/Triple Captain
+    chip_calendar: bool = False       # time chips by their best remaining week
     chip_reserve: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_CHIP_RESERVE))
     random_state: int = 42            # set per run from `seeds`
     benchmark_csv: Optional[Path] = None
@@ -481,7 +482,8 @@ class Manager:
 
 def play_deadline(manager: Manager, projection: pd.DataFrame, t: int,
                   prices: Dict[int, int], data: SeasonData, config: SimConfig,
-                  first_deadline: bool) -> Dict[str, Any]:
+                  first_deadline: bool,
+                  calendar: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     """Plan, execute week 1 of the plan, and score gameweek t."""
     transfer_config = TransferConfig(
         horizon=config.horizon, decay=config.decay, bench_weight=config.bench_weight,
@@ -497,7 +499,8 @@ def play_deadline(manager: Manager, projection: pd.DataFrame, t: int,
         squad_ids = list(manager.squad)
         bank, free = manager.bank / 10, manager.free_transfers
 
-    result = plan_transfers(projection, squad_ids, bank, free, transfer_config)
+    result = plan_transfers(projection, squad_ids, bank, free, transfer_config,
+                            calendar=calendar)
     week = result["plan"][0]
     chip = week.get("chip")
     playing = week["squad"]
@@ -595,19 +598,27 @@ def simulate(config: SimConfig, features: pd.DataFrame, data: SeasonData,
             trained_for = t
 
         horizon_end = min(t + config.horizon - 1, max(data.gameweeks))
+        # The chip calendar looks past the horizon to each open copy's expiry.
+        calendar_end = horizon_end
+        if config.chips and config.chip_calendar:
+            calendar_end = max([horizon_end] + [w[2] for m in managers.values()
+                                                for w in m.chip_windows
+                                                if w[1] <= horizon_end and w[2] >= t])
         available = data.available(t)
         owned = set().union(*(m.squad for m in managers.values()))
         prices = data.price_at(t)
-        projections = project(data, t, horizon_end, available, prices, bundles, projectors)
+        projections = project(data, t, calendar_end, available, prices, bundles, projectors)
         form = data.form_at(t, list(set(available) | owned))
 
         for name in projectors:
             manager = managers[name]
             costs = {**prices, **manager.sale_values(prices)}
-            projection = attach_meta(projections[name].copy(), data, form, costs,
-                                     list(manager.squad), t)
+            full = attach_meta(projections[name].copy(), data, form, costs,
+                               list(manager.squad), t)
+            projection = full[full["gameweek"] <= horizon_end]
+            calendar = full if calendar_end > horizon_end else None
             record = play_deadline(manager, projection, t, prices, data, config,
-                                   first_deadline=index == 0)
+                                   first_deadline=index == 0, calendar=calendar)
             logs[name].append(record)
 
         LOGGER.info("seed %-3d GW%-2d  %s   (%.0fs)", config.random_state, t, "  ".join(
@@ -835,6 +846,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Seeds averaged inside each model stage")
     parser.add_argument("--chips", action="store_true",
                         help="Let the bot play two of each chip, one per half-season")
+    parser.add_argument("--chip-calendar", action="store_true",
+                        help="With --chips: hold each chip for its best remaining week "
+                             "instead of a fixed reserve (experimental; scored worse)")
     parser.add_argument("--benchmark-csv", default=None,
                         help="CSV with gameweek,average_points to plot alongside")
     parser.add_argument("-o", "--output-dir", default="sim_results")
@@ -858,7 +872,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         horizon=args.horizon, decay=args.decay, bench_weight=args.bench_weight,
         candidate_pool=args.candidate_pool, max_transfers_per_week=args.max_transfers,
         time_limit=args.time_limit, odds=not args.no_odds, seeds=tuple(args.seeds),
-        ensemble_size=args.ensemble, chips=args.chips,
+        ensemble_size=args.ensemble, chips=args.chips, chip_calendar=args.chip_calendar,
         benchmark_csv=Path(args.benchmark_csv) if args.benchmark_csv else None,
         output_dir=Path(args.output_dir),
     )

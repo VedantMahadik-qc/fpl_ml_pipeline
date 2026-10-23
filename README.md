@@ -81,6 +81,13 @@ How to read this honestly:
   Wildcard the week before. The first half does not: copies bunch into GW15–18
   as their GW19 expiry comes into view, which is a four-week horizon spending
   what it would otherwise lose rather than timing it.
+- **Timing chips by their "best remaining week" did worse.** A chip calendar
+  (`--chip-calendar`) that scores every week to expiry and holds each chip for
+  its best one scored 1,998 ± 56, 42 points below the fixed reserves (95% CI
+  −69 to −14; ahead in 2 of 15). With form frozen, week-to-week values are
+  nearly flat, so it acts on noise and plays chips early, and it spent the
+  second-half Free Hit around GW30 (47 points) instead of on the GW33 blank (95).
+  Demanding a real spike before playing a chip is worth more than fine timing.
 - **The model beats the baseline in all 15 seeds**, by 151 points on average
   before chips. Without odds it does so in 14 of 15.
 - **Odds buy reliability more than points.** The spread shrinking from ±72 to

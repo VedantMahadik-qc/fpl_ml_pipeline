@@ -91,7 +91,7 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -203,6 +203,11 @@ class TransferConfig:
     # Unused chip copies as (name, first GW, last GW); empty means no chips.
     chip_windows: Sequence[Tuple[str, int, int]] = ()
     use_chips: bool = True            # with --team-id, plan chips you still hold
+    # Experimental: time chips by their best remaining week. Off by default: over
+    # 15 replays of 2025-26 it scored 42 points fewer than the fixed reserves.
+    chip_calendar: bool = False
+    # Per-copy reserves from the chip calendar; overrides chip_reserve when set.
+    chip_window_reserve: Optional[Dict[Tuple[str, int, int], float]] = None
     chip_reserve: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_CHIP_RESERVE))
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -798,6 +803,10 @@ class MultiPeriodOptimizer:
 
     def _reserve(self, name: str, t: int) -> float:
         """Opportunity cost of playing `name` in week t: zero if its copy expires in view."""
+        if self.config.chip_window_reserve:
+            window = next((w for w in self.windows if w[0] == name and w[1] <= t <= w[2]), None)
+            if window in self.config.chip_window_reserve:
+                return float(self.config.chip_window_reserve[window])
         last = self.gameweeks[-1]
         expiring = any(w[0] == name and w[1] <= t <= w[2] and w[2] <= last
                        for w in self.windows)
@@ -1269,6 +1278,21 @@ def print_plan(result: Dict[str, Any], config: TransferConfig) -> None:
     print("=" * width)
 
 
+def chip_calendar_weeks(config: TransferConfig, client) -> int:
+    """Gameweeks to project for the chip calendar: up to the last open copy's expiry."""
+    if not (config.chip_windows and config.chip_calendar and client is not None
+            and not config.projections_csv):
+        return config.horizon
+    events = client.fetch_bootstrap().get("events", [])
+    upcoming = next((int(e["id"]) for e in events if e.get("is_next")), None)
+    if upcoming is None:
+        return config.horizon
+    horizon_end = upcoming + config.horizon - 1
+    last = max([horizon_end] + [w[2] for w in config.chip_windows
+                                if w[1] <= horizon_end and w[2] >= upcoming])
+    return last - upcoming + 1
+
+
 def plan_to_frame(plan: List[Dict[str, Any]]) -> pd.DataFrame:
     """Flatten the plan for CSV export."""
     rows = []
@@ -1323,9 +1347,18 @@ def run(config: TransferConfig) -> Dict[str, Any]:
         bank = config.budget
         free = MAX_FREE_TRANSFERS
 
-    projections = load_projections(config, squad)
-    projections = apply_selling_prices(projections, purchase)
-    result = plan_transfers(projections, squad, bank, free, config)
+    # With chips to time, project past the horizon to each open copy's expiry
+    # so the chip calendar can compare this week with every remaining one.
+    calendar = None
+    calendar_weeks = chip_calendar_weeks(config, client)
+    if calendar_weeks > config.horizon:
+        extended = load_projections(replace(config, horizon=calendar_weeks), squad)
+        calendar = apply_selling_prices(extended, purchase)
+        first = int(calendar["gameweek"].min())
+        projections = calendar[calendar["gameweek"] < first + config.horizon].copy()
+    else:
+        projections = apply_selling_prices(load_projections(config, squad), purchase)
+    result = plan_transfers(projections, squad, bank, free, config, calendar=calendar)
 
     if config.output_path:
         path = Path(config.output_path)
@@ -1357,14 +1390,153 @@ def apply_selling_prices(projections: pd.DataFrame,
     return projections
 
 
+# --------------------------------------------------------------------------- #
+# Chip calendar: when is each chip's best remaining week?
+# --------------------------------------------------------------------------- #
+
+# Chips the calendar times. A Wildcard's worth depends on how many weeks the
+# rebuilt squad lasts, which a one-week score cannot see, so it keeps the fixed
+# reserve.
+CALENDAR_CHIPS = ("freehit", "bboost", "3xc")
+
+
+def best_lineup(squad_week: pd.DataFrame) -> Tuple[float, float, float]:
+    """
+    (XI points, bench points, captain points) for a squad's best legal XI.
+
+    Greedy is exact here: fill each position's formation minimum with its best
+    players, then the remaining slots with the best of the rest, never passing a
+    position's maximum.
+    """
+    by_position = {pos: sorted(block["predicted_points"], reverse=True)
+                   for pos, block in squad_week.groupby("position")}
+    xi: List[float] = []
+    taken = {pos: 0 for pos in FORMATION_BOUNDS}
+    for pos, (low, _high) in FORMATION_BOUNDS.items():
+        picks = by_position.get(pos, [])[:low]
+        xi += picks
+        taken[pos] = len(picks)
+    rest = sorted(((pts, pos) for pos, values in by_position.items()
+                   for pts in values[taken.get(pos, 0):]), reverse=True)
+    for pts, pos in rest:
+        if len(xi) == STARTING_XI:
+            break
+        if taken[pos] < FORMATION_BOUNDS[pos][1]:
+            xi.append(pts)
+            taken[pos] += 1
+    total = float(squad_week["predicted_points"].sum())
+    return float(sum(xi)), total - float(sum(xi)), float(max(xi, default=0.0))
+
+
+def free_hit_score(week: pd.DataFrame, budget: float, pool: int = 12) -> Optional[float]:
+    """XI + captain of the best 15 within budget for one week, on a slimmed pool."""
+    from fpl_optimizer import OptimizerConfig, SquadOptimizer
+
+    keep = set()
+    for _, block in week.groupby("position"):
+        keep.update(block.nlargest(pool, "predicted_points")["player_id"])
+        keep.update(block.nsmallest(5, "cost")["player_id"])
+    for _, block in week.groupby("team"):
+        keep.update(block.nsmallest(2, "cost")["player_id"])
+    players = week[week["player_id"].isin(keep)].reset_index(drop=True)
+    try:
+        optimizer = SquadOptimizer(players, OptimizerConfig(budget=budget, bench_weight=0.0))
+        optimizer.build()
+        optimizer.solve()
+        squad = optimizer.extract()
+    except (RuntimeError, AssertionError) as exc:
+        LOGGER.debug("Free Hit estimate failed: %s", exc)
+        return None
+    starters = squad[squad["is_starter"]]
+    return float(starters["predicted_points"].sum()
+                 + squad.loc[squad["is_captain"], "predicted_points"].sum())
+
+
+def chip_calendar(calendar: pd.DataFrame, squad: Sequence[int], budget: float,
+                  windows: Sequence[Tuple[str, int, int]], horizon_end: int,
+                  bench_weight: float) -> Dict[Tuple[str, int, int], float]:
+    """
+    Reserve value for each unused chip copy: what its best remaining week is worth.
+
+    Every remaining week up to the copy's expiry is scored for the current
+    squad (Bench Boost: its bench; Triple Captain: its best captain; Free Hit:
+    how much the best one-week 15 beats it). A small assignment then gives each
+    copy its best week, one chip per gameweek, so four chips cannot all claim
+    the same few weeks. A copy whose best week lies beyond the plan's horizon
+    is reserved at that week's value, so it is only played now if now is at
+    least as good; a copy whose best week is inside the horizon is left for the
+    plan to place. Form is frozen at today's, so later weeks differ mainly by
+    fixture, blanks and doubles.
+    """
+    windows = [tuple(w) for w in windows if w[0] in CALENDAR_CHIPS]
+    weeks = sorted(int(g) for g in calendar["gameweek"].unique())
+    if not windows or not weeks:
+        return {}
+
+    meta = calendar.drop_duplicates("player_id").set_index("player_id")
+    owned = [int(i) for i in squad if int(i) in meta.index]
+    needs_fh = any(w[0] == "freehit" for w in windows)
+    values: Dict[Tuple[str, int], float] = {}
+    for u in weeks:
+        week = calendar[calendar["gameweek"] == u]
+        mine = (week[week["player_id"].isin(owned)][["player_id", "position", "predicted_points"]]
+                .groupby(["player_id", "position"], as_index=False)["predicted_points"].sum())
+        blank = [i for i in owned if i not in set(mine["player_id"])]
+        if blank:
+            mine = pd.concat([mine, pd.DataFrame({
+                "player_id": blank, "position": meta.loc[blank, "position"].to_numpy(),
+                "predicted_points": 0.0})], ignore_index=True)
+        xi, bench, captain = best_lineup(mine)
+        values["bboost", u] = (1 - bench_weight) * bench
+        values["3xc", u] = captain
+        if needs_fh and any(w[0] == "freehit" and w[1] <= u <= w[2] for w in windows):
+            best = free_hit_score(week.groupby(["player_id", "player_name", "position", "team",
+                                                "cost"], as_index=False)["predicted_points"].sum(),
+                                  budget)
+            values["freehit", u] = max(0.0, best - (xi + captain)) if best is not None else 0.0
+
+    problem = pulp.LpProblem("chip_calendar", pulp.LpMaximize)
+    pick = {(k, u): pulp.LpVariable(f"pick_{k}_{u}", cat=pulp.LpBinary)
+            for k, (name, start, stop) in enumerate(windows) for u in weeks
+            if start <= u <= stop and (name, u) in values}
+    problem += pulp.lpSum(values[windows[k][0], u] * v for (k, u), v in pick.items())
+    for k in range(len(windows)):
+        problem += pulp.lpSum(v for (j, _u), v in pick.items() if j == k) <= 1
+    for u in weeks:
+        problem += pulp.lpSum(v for (_k, w), v in pick.items() if w == u) <= 1
+    problem.solve(pulp.PULP_CBC_CMD(msg=False))
+
+    reserve: Dict[Tuple[str, int, int], float] = {}
+    for k, window in enumerate(windows):
+        chosen = [u for (j, u), v in pick.items() if j == k and (v.value() or 0) > 0.5]
+        best_week = chosen[0] if chosen else None
+        reserve[window] = (values[window[0], best_week]
+                           if best_week is not None and best_week > horizon_end else 0.0)
+        LOGGER.info("Chip calendar: %s best in GW%s (%.1f)%s.", CHIP_LABELS[window[0]],
+                    best_week, values.get((window[0], best_week), 0.0),
+                    "" if reserve[window] else ", inside the horizon")
+    return reserve
+
+
 def plan_transfers(projections: pd.DataFrame, squad: Sequence[int], bank: float,
-                   free: int, config: TransferConfig) -> Dict[str, Any]:
+                   free: int, config: TransferConfig,
+                   calendar: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     """
     Prune, check feasibility, build, solve and validate one H-week plan.
 
     Split out of `run()` so the season simulator can call it with in-memory
     projections. An empty `squad` with `config.wildcard` set is a fresh build.
+    `calendar` holds projections past the horizon, up to the chips' expiry;
+    given it, chip reserves come from the chip calendar instead of the fixed
+    values.
     """
+    if calendar is not None and config.chip_windows and squad:
+        horizon_end = int(projections["gameweek"].max())
+        owned = calendar[calendar["player_id"].isin(squad)].drop_duplicates("player_id")
+        config = replace(config, chip_window_reserve=chip_calendar(
+            calendar, squad, bank + float(owned["cost"].sum()), config.chip_windows,
+            horizon_end, config.bench_weight))
+
     # Widen the pool until the problem is provably feasible, rather than letting
     # CBC discover it and report a bare "Infeasible".
     pruned = None
@@ -1436,6 +1608,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     solver_group.add_argument("--solver-msg", action="store_true")
     solver_group.add_argument("--no-chips", action="store_true",
                               help="Plan without Wildcard/Free Hit/Bench Boost/Triple Captain")
+    solver_group.add_argument("--chip-calendar", action="store_true",
+                              help="Experimental: hold each chip for its best remaining "
+                                   "week instead of the fixed reserves (scored worse in "
+                                   "the season replay)")
     solver_group.add_argument("--chip-reserve", nargs="+", default=[], metavar="CHIP=PTS",
                               help="Points a chip must beat to be played, e.g. bboost=8 3xc=5 "
                                    f"(defaults: {DEFAULT_CHIP_RESERVE})")
@@ -1478,7 +1654,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         time_limit=args.time_limit,
         solver_msg=args.solver_msg,
         output_path=Path(args.output) if args.output else None,
-        use_chips=not args.no_chips,
+        use_chips=not args.no_chips, chip_calendar=args.chip_calendar,
         chip_reserve={**DEFAULT_CHIP_RESERVE, **parse_chip_reserve(args.chip_reserve)},
     )
 

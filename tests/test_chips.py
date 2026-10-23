@@ -103,3 +103,47 @@ def test_one_chip_per_gameweek():
     played = [week["chip"] for week in result["plan"] if week["chip"]]
     weeks = [week["gameweek"] for week in result["plan"] if week["chip"]]
     assert len(played) == 2 and len(set(weeks)) == 2
+
+
+def test_greedy_best_lineup_matches_the_solver():
+    from fpl_optimizer import OptimizerConfig, SquadOptimizer
+    from fpl_transfers import best_lineup
+
+    projections, squad, _ = owned_squad()
+    week = projections[(projections["gameweek"] == 2) & projections["player_id"].isin(squad)]
+    xi, bench, captain = best_lineup(week)
+
+    solver = SquadOptimizer(week.reset_index(drop=True), OptimizerConfig(budget=1000.0))
+    solver.build(); solver.solve()
+    picked = solver.extract()
+    exact_xi = picked.loc[picked["is_starter"], "predicted_points"].sum()
+    assert xi == pytest.approx(exact_xi)
+    assert bench == pytest.approx(week["predicted_points"].sum() - exact_xi)
+    assert captain == pytest.approx(week["predicted_points"].max())
+
+
+def test_calendar_reserves_a_chip_for_its_best_week_beyond_the_horizon():
+    from fpl_transfers import chip_calendar
+
+    projections, squad, bank = owned_squad(gameweeks=tuple(range(1, 9)))
+    projections.loc[projections["gameweek"] == 7, "predicted_points"] *= 3
+    reserve = chip_calendar(projections, squad, 100.0,
+                            [("bboost", 1, 8), ("3xc", 1, 8)], horizon_end=3,
+                            bench_weight=0.1)
+    # Both want GW7; one chip per week, so one gets it and the other the next best.
+    assert reserve[("bboost", 1, 8)] > 0 and reserve[("3xc", 1, 8)] > 0
+
+    plan = plan_transfers(projections[projections["gameweek"] <= 3], squad, bank, 1,
+                          config([("bboost", 1, 8), ("3xc", 1, 8)]),
+                          calendar=projections)
+    assert chips_played(plan) == {}
+
+
+def test_calendar_frees_a_chip_whose_best_week_is_inside_the_horizon():
+    from fpl_transfers import chip_calendar
+
+    projections, squad, _ = owned_squad(gameweeks=tuple(range(1, 9)))
+    projections.loc[projections["gameweek"] == 2, "predicted_points"] *= 3
+    reserve = chip_calendar(projections, squad, 100.0, [("3xc", 1, 8)], horizon_end=3,
+                            bench_weight=0.1)
+    assert reserve[("3xc", 1, 8)] == 0.0
