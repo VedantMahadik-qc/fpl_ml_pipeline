@@ -65,7 +65,7 @@ import json
 import logging
 import re
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -89,7 +89,7 @@ from sklearn.metrics import (
 
 # Defined in its own module, NOT here. A class pickled from a script is recorded
 # as `__main__.TwoStageModel` and then fails to load from any other entry point.
-from fpl_models import TwoStageModel
+from fpl_models import SeedAveragedClassifier, SeedAveragedRegressor, TwoStageModel
 
 try:  # sklearn >= 1.4
     from sklearn.metrics import root_mean_squared_error
@@ -151,6 +151,7 @@ class TrainConfig:
     permutation_sample: int = 5000
     random_state: int = 42
     odds_dropout: bool = True         # also train on an odds-masked copy of each row
+    ensemble_size: int = 1            # seeds per stage, predictions averaged
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -397,6 +398,25 @@ def fit_stage(estimator, X_fit, y_fit, X_valid, y_valid, config: TrainConfig, la
     return estimator
 
 
+def fit_ensemble(build, X_fit, y_fit, X_valid, y_valid, config: TrainConfig, label: str):
+    """
+    Fit one stage `config.ensemble_size` times under different seeds.
+
+    A size of 1 returns the plain estimator, exactly as before. Member seeds are
+    `random_state * 100 + k`, so ensembles built from neighbouring base seeds do
+    not share members.
+    """
+    if config.ensemble_size <= 1:
+        return fit_stage(build(config), X_fit, y_fit, X_valid, y_valid, config, label)
+    members = [
+        fit_stage(build(replace(config, random_state=config.random_state * 100 + k)),
+                  X_fit, y_fit, X_valid, y_valid, config, f"{label}[{k}]")
+        for k in range(config.ensemble_size)
+    ]
+    wrapper = SeedAveragedClassifier if label == "clf" else SeedAveragedRegressor
+    return wrapper(members)
+
+
 # --------------------------------------------------------------------------- #
 # Metrics
 # --------------------------------------------------------------------------- #
@@ -623,8 +643,8 @@ def train_position_model(position: str, train: pd.DataFrame, test: pd.DataFrame,
     y_test = test_pos[TARGET].to_numpy(dtype=float)
 
     # ---- Stage 1: P(plays), on ALL rows ----
-    classifier = fit_stage(
-        build_classifier(config),
+    classifier = fit_ensemble(
+        build_classifier,
         X_fit, fit_df["played"].to_numpy(),
         X_valid, valid_df["played"].to_numpy(),
         config, "clf")
@@ -638,8 +658,8 @@ def train_position_model(position: str, train: pd.DataFrame, test: pd.DataFrame,
                        position, len(fit_played))
         return None
 
-    regressor = fit_stage(
-        build_regressor(config),
+    regressor = fit_ensemble(
+        build_regressor,
         prepare_matrix(fit_played, active), fit_played[TARGET].to_numpy(dtype=float),
         prepare_matrix(valid_played, active), valid_played[TARGET].to_numpy(dtype=float),
         config, "reg")
@@ -863,6 +883,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-depth", type=int, default=5)
     parser.add_argument("--permutation-repeats", type=int, default=5)
     parser.add_argument("--random-state", type=int, default=42)
+    parser.add_argument("--ensemble", type=int, default=1,
+                        help="Seeds per stage, predictions averaged (default: 1)")
     parser.add_argument("--no-odds-dropout", action="store_true",
                         help="Train only on rows as they are, without the odds-masked copy")
     parser.add_argument("--log-level", default="INFO",
@@ -882,7 +904,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         min_games_prior=args.min_games_prior, n_estimators=args.n_estimators,
         learning_rate=args.learning_rate, max_depth=args.max_depth,
         permutation_repeats=args.permutation_repeats, random_state=args.random_state,
-        odds_dropout=not args.no_odds_dropout,
+        odds_dropout=not args.no_odds_dropout, ensemble_size=args.ensemble,
     )
 
     try:

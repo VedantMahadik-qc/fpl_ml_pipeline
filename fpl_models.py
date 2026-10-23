@@ -31,6 +31,7 @@ import sys
 from typing import Sequence, Tuple
 
 import numpy as np
+from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 
 
 class TwoStageModel:
@@ -63,6 +64,47 @@ class TwoStageModel:
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"TwoStageModel(position={self.position!r}, features={len(self.features)})"
+
+
+class _SeedAveraged(BaseEstimator):
+    """
+    The same model fitted under several seeds, predictions averaged.
+
+    XGBoost's row and column subsampling makes each fit a different draw, and a
+    season replay showed that draw alone moves a season total by ~100 points.
+    Averaging k draws is ordinary bagging over seeds: same bias, roughly 1/k the
+    seed variance. Defined here, like TwoStageModel, so pickles load anywhere.
+    """
+
+    def __init__(self, estimators: Sequence = ()) -> None:
+        self.estimators = estimators
+
+    @property
+    def feature_importances_(self) -> np.ndarray:
+        return np.mean([e.feature_importances_ for e in self.estimators], axis=0)
+
+    def fit(self, X, y):  # pragma: no cover - members are fitted individually
+        raise NotImplementedError("Fit the members, then wrap them.")
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"{type(self).__name__}(k={len(self.estimators)})"
+
+
+class SeedAveragedClassifier(ClassifierMixin, _SeedAveraged):
+    @property
+    def classes_(self) -> np.ndarray:
+        return self.estimators[0].classes_
+
+    def predict_proba(self, X) -> np.ndarray:
+        return np.mean([e.predict_proba(X) for e in self.estimators], axis=0)
+
+    def predict(self, X) -> np.ndarray:
+        return self.classes_[self.predict_proba(X).argmax(axis=1)]
+
+
+class SeedAveragedRegressor(RegressorMixin, _SeedAveraged):
+    def predict(self, X) -> np.ndarray:
+        return np.mean([e.predict(X) for e in self.estimators], axis=0)
 
 
 def register_legacy_pickle_aliases() -> None:

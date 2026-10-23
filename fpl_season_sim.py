@@ -101,6 +101,7 @@ class SimConfig:
     team_rating_window: int = 10
     odds: bool = True
     seeds: Sequence[int] = (42,)
+    ensemble_size: int = 1            # seeds averaged inside each model
     random_state: int = 42            # set per run from `seeds`
     benchmark_csv: Optional[Path] = None
     output_dir: Path = Path("sim_results")
@@ -428,7 +429,8 @@ def train_bundles(features: pd.DataFrame, config: SimConfig,
 
     train_config = TrainConfig(train_seasons=tuple(config.train_seasons),
                                test_season=config.season, permutation_repeats=0,
-                               random_state=config.random_state)
+                               random_state=config.random_state,
+                               ensemble_size=config.ensemble_size)
     bundles: Dict[str, Dict[str, Any]] = {}
     for position in POSITIONS:
         result = train_position_model(position, train, test, feature_columns, train_config)
@@ -793,6 +795,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Leave the bookmaker odds features out (ablation)")
     parser.add_argument("--seeds", type=int, nargs="+", default=[42],
                         help="Model random seeds, one replay each; several measure the noise")
+    parser.add_argument("--ensemble", type=int, default=1,
+                        help="Seeds averaged inside each model stage")
     parser.add_argument("--benchmark-csv", default=None,
                         help="CSV with gameweek,average_points to plot alongside")
     parser.add_argument("-o", "--output-dir", default="sim_results")
@@ -815,6 +819,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         horizon=args.horizon, decay=args.decay, bench_weight=args.bench_weight,
         candidate_pool=args.candidate_pool, max_transfers_per_week=args.max_transfers,
         time_limit=args.time_limit, odds=not args.no_odds, seeds=tuple(args.seeds),
+        ensemble_size=args.ensemble,
         benchmark_csv=Path(args.benchmark_csv) if args.benchmark_csv else None,
         output_dir=Path(args.output_dir),
     )
