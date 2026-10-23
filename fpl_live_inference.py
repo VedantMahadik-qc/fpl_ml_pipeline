@@ -120,7 +120,7 @@ class LiveConfig:
     medians_path: Path = Path("fpl_position_medians.json")
     budget: float = 100.0
     gameweek: Optional[int] = None        # default: the API's "next" event
-    allow_status: Sequence[str] = ("a",)
+    allow_status: Sequence[str] = ("a", "d")   # doubtful players stay, scaled by chance
     min_chance: int = 0                   # chance_of_playing_next_round threshold
     bench_weight: float = 0.0
     reuse_last_row: bool = False
@@ -214,10 +214,10 @@ def filter_available(frame: pd.DataFrame, config: LiveConfig) -> pd.DataFrame:
     """
     Keep only players the API says can play.
 
-    Default is status == 'a' exactly, per spec. Worth knowing what that costs:
-    'd' (doubtful) covers knocks with a 75% chance of playing, and those players
-    are often the best value picks of the week. `--allow-status a d --min-chance 75`
-    is the pragmatic setting.
+    Default keeps 'a' (available) and 'd' (doubtful). A doubtful player's
+    appearance probability is scaled by FPL's chance_of_playing in
+    predict_points, so a 75% knock still counts and a 25% one barely does.
+    `--allow-status a` restores the strict filter.
     """
     before = len(frame)
     allowed = {s.strip().lower() for s in config.allow_status}
@@ -828,6 +828,12 @@ def predict_points(frame: pd.DataFrame, bundles: Dict[str, Dict[str, Any]]) -> p
             continue
 
         prob = np.clip(prob, 0.0, 1.0)
+        # FPL's own injury flag. The model only sees recent minutes, so a player
+        # with a knock looks fully fit; chance_of_playing (25/50/75) scales his
+        # appearance probability. Null means no doubt has been reported.
+        if "chance_of_playing" in frame.columns:
+            chance = pd.to_numeric(frame.loc[mask, "chance_of_playing"], errors="coerce")
+            prob = prob * np.where(chance.notna(), chance.to_numpy(dtype=float) / 100, 1.0)
         conditional = np.clip(conditional, 0.0, None)
         expected = prob * conditional
 
@@ -1024,7 +1030,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("-b", "--budget", type=float, default=100.0)
     parser.add_argument("--gameweek", type=int, default=None,
                         help="Override the target gameweek (default: the API's next)")
-    parser.add_argument("--allow-status", nargs="+", default=["a"],
+    parser.add_argument("--allow-status", nargs="+", default=["a", "d"],
                         help="FPL status codes to keep (default: a)")
     parser.add_argument("--min-chance", type=int, default=0,
                         help="Minimum chance_of_playing_next_round percent")

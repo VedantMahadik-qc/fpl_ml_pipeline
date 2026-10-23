@@ -111,6 +111,7 @@ class SimConfig:
     seeds: Sequence[int] = (42,)
     ensemble_size: int = 1            # seeds averaged inside each model
     chips: bool = False               # play Wildcard/Free Hit/Bench Boost/Triple Captain
+    pooled: bool = True               # one model for all positions
     chip_calendar: bool = False       # time chips by their best remaining week
     chip_reserve: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_CHIP_RESERVE))
     random_state: int = 42            # set per run from `seeds`
@@ -426,6 +427,7 @@ def train_bundles(features: pd.DataFrame, config: SimConfig,
         TrainConfig,
         add_position_indicators,
         assert_no_post_match_features,
+        fit_pooled,
         select_feature_columns,
         train_position_model,
     )
@@ -449,10 +451,12 @@ def train_bundles(features: pd.DataFrame, config: SimConfig,
     train_config = TrainConfig(train_seasons=tuple(config.train_seasons),
                                test_season=config.season, permutation_repeats=0,
                                random_state=config.random_state,
-                               ensemble_size=config.ensemble_size)
+                               ensemble_size=config.ensemble_size, pooled=config.pooled)
+    pooled = fit_pooled(train, feature_columns, train_config) if config.pooled else None
     bundles: Dict[str, Dict[str, Any]] = {}
     for position in POSITIONS:
-        result = train_position_model(position, train, test, feature_columns, train_config)
+        result = train_position_model(position, train, test, feature_columns, train_config,
+                                      pooled)
         if result is None:
             raise RuntimeError(f"Could not train a {position} model.")
         bundles[position] = {"model": result["model"], "features": result["features"]}
@@ -844,6 +848,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Model random seeds, one replay each; several measure the noise")
     parser.add_argument("--ensemble", type=int, default=1,
                         help="Seeds averaged inside each model stage")
+    parser.add_argument("--per-position", action="store_true",
+                        help="Train a separate model per position (the pre-pooled setup)")
     parser.add_argument("--chips", action="store_true",
                         help="Let the bot play two of each chip, one per half-season")
     parser.add_argument("--chip-calendar", action="store_true",
@@ -873,6 +879,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         candidate_pool=args.candidate_pool, max_transfers_per_week=args.max_transfers,
         time_limit=args.time_limit, odds=not args.no_odds, seeds=tuple(args.seeds),
         ensemble_size=args.ensemble, chips=args.chips, chip_calendar=args.chip_calendar,
+        pooled=not args.per_position,
         benchmark_csv=Path(args.benchmark_csv) if args.benchmark_csv else None,
         output_dir=Path(args.output_dir),
     )

@@ -1,0 +1,39 @@
+gameweek,points,gross_points,hits,transfers,free_transfers_after,bank,squad_value,projected_xi,captain,captain_points,auto_subs,transfers_in,transfers_out,total_points
+1,131.0,131.0,0,0,1,5.0,95.0,114.0,Daniel Ballard,17.0,0,,,131.0
+2,158.0,162.0,1,2,1,4.0,96.0,138.0,Jurriën Timber,24.0,0,Jurriën Timber; João Pedro Junqueira de Jesus,Chris Wood; Daniel Ballard,289.0
+3,131.0,135.0,1,2,1,3.5,96.7,120.0,Marc Guéhi,15.0,0,Marcos Senesi Barón; Dominik Szoboszlai,Riccardo Calafiori; Josh Cullen,420.0
+4,104.0,108.0,1,2,1,5.6,95.0,92.0,Martín Zubimendi Ibáñez,16.0,0,Martín Zubimendi Ibáñez; Omar Alderete,Maxence Lacroix; Dominik Szoboszlai,524.0
+5,94.0,98.0,1,2,1,5.5,95.6,83.0,Ryan Gravenberch,15.0,0,Jean-Philippe Mateta; Ryan Gravenberch,Martín Zubimendi Ibáñez; João Pedro Junqueira de Jesus,618.0
+6,124.0,128.0,1,2,1,6.8,94.5,111.0,Omar Alderete,17.0,0,Gabriel dos Santos Magalhães; Danny Welbeck,Trevoh Chalobah; Hugo Ekitiké,742.0
+7,105.0,109.0,1,2,1,6.0,95.6,91.0,Antoine Semenyo,18.0,0,Declan Rice; Bruno Guimarães Rodriguez Moura,Jaidon Anthony; Enzo Fernández,847.0
+8,123.0,127.0,1,2,1,4.0,98.2,109.0,Reece James,18.0,0,Bryan Mbeumo; Reece James,Marcos Senesi Barón; Jack Grealish,970.0
+9,120.0,124.0,1,2,1,5.3,97.0,101.0,Micky van de Ven,23.0,0,Carlos Henrique Casimiro; Micky van de Ven,Antoine Semenyo; Omar Alderete,1090.0
+10,112.0,116.0,1,2,1,6.3,96.6,103.0,Declan Rice,13.0,0,Maxence Lacroix; Michael Keane,Jurriën Timber; Micky van de Ven,1202.0
+11,84.0,88.0,1,2,1,8.5,94.8,73.0,Michael Keane,15.0,0,Igor Thiago Nascimento Rodrigues; Kiernan Dewsbury-Hall,Jean-Philippe Mateta; Ryan Gravenberch,1286.0
+12,126.0,130.0,1,2,1,9.7,94.0,110.0,Eberechi Eze,20.0,0,Daniel Muñoz Mejía; Eberechi Eze,Gabriel dos Santos Magalhães; Bryan Mbeumo,1412.0
+13,81.0,85.0,1,2,1,7.1,96.7,70.0,Phil Foden,15.0,0,Phil Foden; Bruno Borges Fernandes,Declan Rice; Eberechi Eze,1493.0
+14,118.0,122.0,1,2,1,5.9,98.1,105.0,Phil Foden,17.0,0,Hugo Ekitiké; Dominic Calvert-Lewin,Igor Thiago Nascimento Rodrigues; Danny Welbeck,1611.0
+15,131.0,135.0,1,2,1,6.1,98.1,117.0,Bruno Borges Fernandes,18.0,0,Malo Gusto; Joško Gvardiol,Daniel Muñoz Mejía; Maxence Lacroix,1742.0
+16,149.0,153.0,1,2,1,3.9,100.8,134.0,Callum Hudson-Odoi,19.0,0,Morgan Rogers; Callum Hudson-Odoi,Kiernan Dewsbury-Hall; Carlos Henrique Casimiro,1891.0
+17,129.0,133.0,1,2,1,6.0,99.3,112.0,Keane Lewis-Potter,21.0,0,Declan Rice; Keane Lewis-Potter,Malo Gusto; Bruno Borges Fernandes,2020.0
+18,93.0,97.0,1,2,1,8.2,97.5,77.0,Kevin Schade,20.0,0,Kevin Schade; James Garner,Phil Foden; Callum Hudson-Odoi,2113.0
+19,88.0,92.0,1,2,1,7.5,98.4,76.0,James Garner,16.0,0,Gabriel dos Santos Magalhães; Nathan Collins,Michael Keane; Joško Gvardiol,2201.0
+20,113.0,117.0,1,2,1,9.2,96.9,100.0,Declan Rice,17.0,0,Igor Thiago Nascimento Rodrigues; Malick Thiaw,Keane Lewis-Potter; Hugo Ekitiké,2314.0
+21,104.0,108.0,1,2,1,8.1,98.3,93.0,Harvey Barnes,15.0,0,Bruno Borges Fernandes; Harvey Barnes,Declan Rice; Kevin Schade,2418.0
+22,90.0,94.0,1,2,1,7.4,99.3,79.0,Patrick Dorgu,15.0,0,João Pedro Junqueira de Jesus; Patrick Dorgu,Nathan Collins; Dominic Calvert-Lewin,2508.0
+23,86.0,90.0,1,2,1,7.1,99.8,77.0,Dominik Szoboszlai,13.0,0,Dominik Szoboszlai; Jarrod Bowen,Igor Thiago Nascimento Rodrigues; Bruno Guimarães Rodriguez Moura,2594.0
+24,90.0,94.0,1,2,1,6.8,100.4,80.0,Noni Madueke,14.0,0,Noni Madueke; James Hill,Patrick Dorgu; Harvey Barnes,2684.0
+25,109.0,113.0,1,2,1,2.0,105.4,93.0,Cole Palmer,20.0,0,Cole Palmer; Dean Henderson,Jordan Pickford; James Garner,2793.0
+26,117.0,121.0,1,2,1,1.5,105.9,104.0,Virgil van Dijk,17.0,0,Virgil van Dijk; Nico O'Reilly,Reece James; Marc Guéhi,2910.0
+27,112.0,116.0,1,2,1,3.1,104.5,99.0,Nico O'Reilly,17.0,0,Alex Iwobi; Alexis Mac Allister,Noni Madueke; Morgan Rogers,3022.0
+28,109.0,113.0,1,2,1,17.4,90.5,95.0,Mikkel Damsgaard,18.0,0,Mikkel Damsgaard; Norberto Bercique Gomes Betuncal,Cole Palmer; Erling Haaland,3131.0
+29,102.0,106.0,1,2,1,16.8,91.1,87.0,João Pedro Junqueira de Jesus,19.0,0,James Tarkowski; Anthony Gordon,Alex Iwobi; Virgil van Dijk,3233.0
+30,100.0,104.0,1,2,1,18.2,89.8,92.0,Konstantinos Mavropanos,12.0,0,Konstantinos Mavropanos; Pascal Groß,Mikkel Damsgaard; James Tarkowski,3333.0
+31,85.0,89.0,1,2,1,16.4,91.7,73.0,Norberto Bercique Gomes Betuncal,16.0,0,Ollie Watkins; Neco Williams,James Hill; João Pedro Junqueira de Jesus,3418.0
+32,140.0,144.0,1,2,1,18.1,90.2,123.0,Konstantinos Mavropanos,21.0,0,Marc Guéhi; Noah Okafor,Anthony Gordon; Malick Thiaw,3558.0
+33,145.0,149.0,1,2,1,20.4,88.0,129.0,Morgan Gibbs-White,20.0,0,Adrien Truffert; Morgan Gibbs-White,Bruno Borges Fernandes; Neco Williams,3703.0
+34,79.0,83.0,1,2,1,19.3,89.2,70.0,Morgan Gibbs-White,13.0,0,David Raya Martín; Elliot Anderson,Dean Henderson; Pascal Groß,3782.0
+35,93.0,97.0,1,2,1,18.3,90.4,82.0,Jérémy Doku,15.0,0,Marcos Senesi Barón; Jérémy Doku,Alexis Mac Allister; Konstantinos Mavropanos,3875.0
+36,127.0,131.0,1,2,1,16.7,92.0,116.0,James Tarkowski,15.0,0,Enzo Fernández; James Tarkowski,Nico O'Reilly; Noah Okafor,4002.0
+37,108.0,112.0,1,2,1,12.9,95.7,97.0,Ollie Watkins,15.0,0,Antonee Robinson; Bruno Borges Fernandes,Marc Guéhi; Jérémy Doku,4110.0
+38,114.0,118.0,1,2,1,16.5,92.5,100.0,Patrick Dorgu,18.0,0,Issa Diop; Patrick Dorgu,Gabriel dos Santos Magalhães; Marcos Senesi Barón,4224.0

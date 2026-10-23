@@ -1,0 +1,54 @@
+{
+  "history_path": "fpl_combined_history.csv",
+  "season": "2025-26",
+  "train_seasons": [
+    "2023-24",
+    "2024-25"
+  ],
+  "start_gw": 1,
+  "end_gw": null,
+  "projectors": [
+    "model",
+    "roll3",
+    "oracle"
+  ],
+  "retrain_every": 0,
+  "horizon": 4,
+  "decay": 0.85,
+  "bench_weight": 0.1,
+  "candidate_pool": 25,
+  "max_transfers_per_week": 2,
+  "time_limit": 60,
+  "budget": 100.0,
+  "team_rating_window": 10,
+  "odds": true,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "ensemble_size": 1,
+  "chips": true,
+  "pooled": true,
+  "chip_calendar": false,
+  "chip_reserve": {
+    "wildcard": 20.0,
+    "freehit": 15.0,
+    "bboost": 12.0,
+    "3xc": 6.0
+  },
+  "benchmark_csv": null,
+  "output_dir": "sim_results\\pooled_chips"
+}

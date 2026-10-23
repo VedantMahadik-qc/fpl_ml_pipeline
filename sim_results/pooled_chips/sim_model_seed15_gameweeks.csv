@@ -1,0 +1,39 @@
+gameweek,points,gross_points,hits,transfers,free_transfers_after,bank,squad_value,chip,projected_xi,captain,captain_points,auto_subs,transfers_in,transfers_out,total_points
+1,63.0,63.0,0,0,1,0.0,100.0,,46.06498956680298,Mohamed Salah,8.0,2,,,63.0
+2,41.0,41.0,0,1,1,0.9,98.8,,43.207040548324585,Bryan Mbeumo,2.0,0,Marcus Tavernier,Mathys Tel,104.0
+3,57.0,57.0,0,1,1,0.8,98.9,,46.54481530189514,Morgan Gibbs-White,2.0,0,João Pedro Junqueira de Jesus,Yoane Wissa,161.0
+4,61.0,61.0,0,1,1,0.7,98.8,3xc,43.23985838890076,Mohamed Salah,18.0,0,Nick Pope,Aaron Ramsdale,222.0
+5,44.0,44.0,0,1,1,1.4,98.1,,45.247307538986206,Mohamed Salah,5.0,1,Tino Livramento,Joško Gvardiol,266.0
+6,52.0,56.0,1,2,1,0.1,99.4,,45.88738250732422,Erling Haaland,16.0,1,Erling Haaland; Bruno Borges Fernandes,Mohamed Salah; Chris Wood,318.0
+7,55.0,55.0,0,1,1,0.5,98.5,,44.758559465408325,Erling Haaland,8.0,1,Daniel Muñoz Mejía,Marc Cucurella Saseta,373.0
+8,71.0,71.0,0,1,1,0.8,98.3,,44.84932851791382,Erling Haaland,13.0,0,Dan Burn,Fabian Schär,444.0
+9,54.0,54.0,0,1,1,0.0,99.0,,47.81609272956848,Erling Haaland,2.0,0,Antoine Semenyo,Morgan Gibbs-White,498.0
+10,59.0,59.0,0,1,1,0.4,98.4,,46.40422773361206,Erling Haaland,13.0,0,Jayden Bogle,Tino Livramento,557.0
+11,47.0,47.0,0,1,1,0.4,98.4,,51.4105761051178,Erling Haaland,4.0,1,Marc Guéhi,Dan Burn,604.0
+12,47.0,47.0,0,1,1,0.0,99.1,,50.00226330757141,Erling Haaland,2.0,1,Jean-Philippe Mateta,Jarrod Bowen,651.0
+13,55.0,55.0,0,1,1,0.9,98.1,,47.39214563369751,Erling Haaland,2.0,1,Igor Thiago Nascimento Rodrigues,João Pedro Junqueira de Jesus,706.0
+14,75.0,75.0,0,1,1,0.6,98.4,,50.2360520362854,Bruno Borges Fernandes,4.0,0,Phil Foden,Antoine Semenyo,781.0
+15,62.0,62.0,0,1,1,0.2,98.8,,50.628056049346924,Erling Haaland,2.0,1,Diego Gómez Amarilla,Albert Sambi Lokonga,843.0
+16,77.0,77.0,0,0,2,0.2,98.9,freehit,50.76958465576172,Erling Haaland,13.0,0,,,920.0
+17,70.0,70.0,0,11,3,0.1,99.1,wildcard,50.312050580978394,Phil Foden,3.0,2,Antoine Semenyo; Caoimhín Kelleher; Jan Paul van Hecke; Malo Gusto; Calvin Bassey; Harry Wilson; Virgil van Dijk; Rúben dos Santos Gato Alves Dias; Amad Diallo; Lucas Estella Perri; Dominic Calvert-Lewin,Ezri Konsa Ngoyo; Marcus Tavernier; Sepp van den Berg; Bryan Mbeumo; Bart Verbruggen; Diego Gómez Amarilla; Daniel Muñoz Mejía; Marc Guéhi; Jean-Philippe Mateta; Jayden Bogle; Nick Pope,990.0
+18,44.0,44.0,0,2,2,0.0,99.2,bboost,44.48119616508484,Erling Haaland,2.0,0,Jaka Bijol; Jarrod Bowen,Igor Thiago Nascimento Rodrigues; Jan Paul van Hecke,1034.0
+19,40.0,40.0,0,2,1,1.6,97.5,,50.62876105308533,Erling Haaland,2.0,1,Adam Wharton; Morgan Gibbs-White,Antoine Semenyo; Amad Diallo,1074.0
+20,44.0,44.0,0,1,1,0.3,98.8,,48.61354851722717,Bukayo Saka,4.0,0,Bukayo Saka,Bruno Borges Fernandes,1118.0
+21,73.0,73.0,0,1,1,0.2,98.7,3xc,45.82140135765076,Erling Haaland,12.0,1,Micky van de Ven,Calvin Bassey,1191.0
+22,19.0,19.0,0,1,1,0.8,98.1,,45.649895906448364,Erling Haaland,2.0,1,Nathan Collins,Rúben dos Santos Gato Alves Dias,1210.0
+23,53.0,53.0,0,1,1,1.4,97.2,,46.67902445793152,Erling Haaland,1.0,0,Hugo Bueno López,Malo Gusto,1263.0
+24,51.0,51.0,0,13,2,0.9,97.5,wildcard,48.01874041557312,Ollie Watkins,10.0,3,Declan Rice; Morgan Rogers; Ollie Watkins; Antoine Semenyo; Trevoh Chalobah; James Tarkowski; Patrick Dorgu; Bruno Borges Fernandes; Neco Williams; José Malheiro de Sá; Yerson Mosquera Valdelamar; Robin Roefs; Mateus Mané,Caoimhín Kelleher; Nathan Collins; Adam Wharton; Harry Wilson; Jaka Bijol; Virgil van Dijk; Phil Foden; Erling Haaland; Morgan Gibbs-White; Micky van de Ven; Hugo Bueno López; Lucas Estella Perri; Dominic Calvert-Lewin,1314.0
+25,57.0,57.0,0,1,2,0.0,98.2,,46.457690477371216,Bruno Borges Fernandes,10.0,2,David Raya Martín,Robin Roefs,1371.0
+26,95.0,95.0,0,2,1,0.3,97.8,bboost,63.6805202960968,Declan Rice,14.0,0,Florian Wirtz; Viktor Gyökeres,Bukayo Saka; Jarrod Bowen,1466.0
+27,41.0,41.0,0,1,1,0.0,98.2,,48.38629150390625,Hugo Ekitiké,2.0,1,Hugo Ekitiké,Ollie Watkins,1507.0
+28,74.0,74.0,0,1,1,2.5,95.7,,45.23276376724243,Antoine Semenyo,8.0,0,Dango Ouattara,Florian Wirtz,1581.0
+29,52.0,52.0,0,1,1,0.7,97.4,,47.91628432273865,Hugo Ekitiké,2.0,0,Virgil van Dijk,Yerson Mosquera Valdelamar,1633.0
+30,45.0,45.0,0,1,1,1.8,96.2,,47.27727174758911,Hugo Ekitiké,1.0,1,João Pedro Junqueira de Jesus,Viktor Gyökeres,1678.0
+31,50.0,54.0,1,2,1,0.0,97.9,,43.44695544242859,Cole Palmer,2.0,0,Bart Verbruggen; Cole Palmer,David Raya Martín; Declan Rice,1728.0
+32,60.0,60.0,0,1,1,0.9,96.9,,45.103960275650024,Cole Palmer,4.0,1,Jan Paul van Hecke,Trevoh Chalobah,1788.0
+33,100.0,100.0,0,0,2,0.9,96.6,freehit,88.8332188129425,Cole Palmer,2.0,1,,,1888.0
+34,34.0,34.0,0,2,1,0.8,96.6,,35.28849375247955,Bruno Borges Fernandes,5.0,0,Igor Thiago Nascimento Rodrigues; Konstantinos Mavropanos,João Pedro Junqueira de Jesus; Patrick Dorgu,1922.0
+35,41.0,45.0,1,2,1,0.6,96.8,,46.67475247383118,Erling Haaland,7.0,0,Jack Hinshelwood; Erling Haaland,Cole Palmer; Hugo Ekitiké,1963.0
+36,69.0,69.0,0,1,1,1.0,96.0,,59.18753671646118,Erling Haaland,11.0,0,Nico O'Reilly,James Tarkowski,2032.0
+37,75.0,75.0,0,1,1,0.9,96.1,,44.345407485961914,Bruno Borges Fernandes,9.0,0,William Saliba,Virgil van Dijk,2107.0
+38,65.0,65.0,0,1,1,0.3,96.4,,44.67360305786133,Erling Haaland,14.0,3,Jarrod Bowen,Igor Thiago Nascimento Rodrigues,2172.0

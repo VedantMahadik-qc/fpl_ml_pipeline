@@ -195,7 +195,7 @@ class TransferConfig:
     max_transfers_per_week: int = 3  # keeps the search tractable
     candidate_pool: int = 40         # top-N per position, plus the current squad
     team_rating_window: int = 10
-    allow_status: Sequence[str] = ("a",)
+    allow_status: Sequence[str] = ("a", "d")   # doubtful players stay, scaled by chance
     min_chance: int = 0
     time_limit: Optional[int] = 120
     solver_msg: bool = False
@@ -1616,7 +1616,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                               help="Points a chip must beat to be played, e.g. bboost=8 3xc=5 "
                                    f"(defaults: {DEFAULT_CHIP_RESERVE})")
 
-    parser.add_argument("--allow-status", nargs="+", default=["a"])
+    parser.add_argument("--allow-status", nargs="+", default=["a", "d"])
     parser.add_argument("--min-chance", type=int, default=0)
     parser.add_argument("-o", "--output", default=None)
     parser.add_argument("--log-level", default="INFO",

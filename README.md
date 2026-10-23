@@ -57,7 +57,7 @@ each chip (Wildcard, Free Hit, Bench Boost, Triple Captain), one per half-season
 Models are trained on 2023-24 and 2024-25 only, and imputation medians are
 fitted on those seasons too.
 
-![Cumulative points, 2025-26, with chips](sim_results/chips/sim_cumulative_points.png)
+![Cumulative points, 2025-26, pooled model with chips](sim_results/pooled_chips/sim_cumulative_points.png)
 
 A single replay is noisy: a small change in projections sends the squad down a
 different path, and the difference compounds over 38 weeks. So every model is
@@ -66,7 +66,8 @@ baselines are deterministic.
 
 | Forecasts fed to the solver | Points (15 seeds) | 95% CI | Worst seed | Before hits | Hits |
 | --- | ---: | :---: | ---: | ---: | ---: |
-| **Two-stage model with odds, playing chips** | **2,039 ± 35** | 2,020–2,059 | 1,975 | 2,053 | 3.5 |
+| **Pooled two-stage model with odds, playing chips** | **2,125 ± 67** | 2,088–2,162 | 2,049 | 2,140 | 3.7 |
+| Per-position models with odds, playing chips | 2,039 ± 35 | 2,020–2,059 | 1,975 | 2,053 | 3.5 |
 | Two-stage model, with bookmaker odds | 1,958 ± 30 | 1,941–1,974 | 1,905 | 1,979 | 5 |
 | Two-stage model, without odds | 1,921 ± 72 | 1,881–1,960 | 1,763 | 1,947 | 7 |
 | Two-stage model with odds, 5-seed ensemble | 1,933 ± 51 | 1,905–1,961 | 1,817 | 1,950 | 4 |
@@ -75,6 +76,12 @@ baselines are deterministic.
 
 How to read this honestly:
 
+- **One model for all positions is worth 85 points a season** (95% CI 39–131;
+  ahead in 14 of 15 seeds, p = 0.001). Four per-position models each saw
+  premiums as rare cases and scored positions on separate scales; pooled, a
+  forward and a midfielder are compared on one scale, which is what captaincy
+  and squad selection do. Captain points rose from 5.5 to 6.3 a gameweek.
+  Rows below the headline use the earlier per-position models.
 - **Chips are worth 82 points a season** (95% CI 57–107; ahead in 14 of 15
   seeds, paired t-test p < 0.001). The second half shows the textbook timings
   without being told them: Free Hit in GW33, Bench Boost in GW26 or GW35–36,
@@ -100,11 +107,15 @@ How to read this honestly:
   spreads no less, which says the run-to-run spread is the season's path
   dependence, not model noise. Five-run estimates of that spread were off by up
   to 2x, which is why the table uses 15.
-- **About 54 points a gameweek with chips and no team news.** Real managers
-  read press conferences. Without the 2025-26 average
-  manager score per gameweek (the FPL API only serves the current season) there
-  is no comparison to the field here; pass one in with
-  `--benchmark-csv gameweek,average_points` to add it.
+- **About 56 points a gameweek, which is probably below the average manager.**
+  The FPL API only serves the current season's averages, so 2025-26 has no
+  direct comparison. Replaying 2026-27 GW1–7 the same way (trained on the
+  three previous seasons) the pooled bot scored 359 ± 18 against the average
+  manager's 416, behind in all 15 seeds. Its weakness is premium players:
+  trained on noisy points, the model shrinks every big season toward the mean,
+  so a consistently elite player is undervalued and often not owned. Each
+  replay also lacks team news, which real managers have; live plans scale each
+  player's chance of playing by FPL's injury flag.
 - **Simplifications:** the fixture schedule is the one that was played, so
   postponements are known early; availability is "registered at a club", so
   injuries are only seen through recent minutes; odds are used for the next
@@ -114,10 +125,11 @@ Reproduce (about two minutes per seed, so roughly half an hour for 15; each
 seed is independent, so runs can be split across processes):
 
 ```bash
-python fpl_season_sim.py --seeds $(seq 1 15) --chips -o sim_results/chips   # headline row
-python fpl_season_sim.py --seeds $(seq 1 15)                  # writes sim_results/
-python fpl_season_sim.py --seeds $(seq 1 15) --no-odds        # ablation row
-python fpl_season_sim.py --seeds $(seq 1 15) --ensemble 5     # ensemble row
+python fpl_season_sim.py --seeds $(seq 1 15) --chips -o sim_results/pooled_chips   # headline
+python fpl_season_sim.py --seeds $(seq 1 15) --chips --per-position -o sim_results/chips
+python fpl_season_sim.py --seeds $(seq 1 15) --per-position              # sim_results/
+python fpl_season_sim.py --seeds $(seq 1 15) --per-position --no-odds    # ablation row
+python fpl_season_sim.py --seeds $(seq 1 15) --per-position --ensemble 5 # ensemble row
 python fpl_season_sim.py --retrain-every 4                    # walk-forward retraining
 ```
 
@@ -221,7 +233,7 @@ tiebreak `.shift(1)` can hand the later fixture's result to the earlier one.
 | --- | --- |
 | **Split** | Train `2023-24` + `2024-25`, test `2025-26`. Strictly temporal. |
 | **Validation** | Tail 10 gameweeks of the last training season, for early stopping. Never random. |
-| **Models** | Four independent regressors — GKP / DEF / MID / FWD. |
+| **Models** | One pooled two-stage model, positions told apart by one-hot indicators (`--per-position` for four). |
 | **Backends** | XGBoost (default), LightGBM, or scikit-learn `HistGradientBoosting`. |
 | **Features** | ~44 columns: 27 rolling, 4 pre-deadline, 9 fixture-difficulty, 4 position indicators. |
 | **Metrics** | MAE and RMSE per position against three naive baselines, split by appearance. |

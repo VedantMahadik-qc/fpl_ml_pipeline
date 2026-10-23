@@ -63,3 +63,21 @@ def test_owned_players_sell_at_selling_price_and_injured_ones_stay():
     injured = out[out["player_id"] == 3]
     assert len(injured) == 1 and injured["predicted_points"].iloc[0] == 0.0
     assert injured["gameweek"].iloc[0] == 8
+
+
+def test_chance_of_playing_scales_the_appearance_probability():
+    import numpy as np
+    from fpl_live_inference import predict_points
+
+    class Stage:
+        def __init__(self, value): self.value = value
+        def predict_proba(self, X): return np.column_stack([1 - np.full(len(X), self.value),
+                                                            np.full(len(X), self.value)])
+        def predict(self, X): return np.full(len(X), self.value)
+
+    frame = pd.DataFrame({"position": ["MID", "MID", "MID"], "f": [1.0, 1.0, 1.0],
+                          "chance_of_playing": [None, 75, 25]})
+    bundles = {"MID": {"classifier": Stage(0.8), "regressor": Stage(5.0), "features": ["f"]}}
+    out = predict_points(frame, bundles)
+    np.testing.assert_allclose(out["prob_play"], [0.8, 0.6, 0.2])
+    np.testing.assert_allclose(out["predicted_points"], [4.0, 3.0, 1.0])
