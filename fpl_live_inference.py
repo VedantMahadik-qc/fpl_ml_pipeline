@@ -187,7 +187,10 @@ def build_live_players(
     team_lookup: Dict[int, Dict[str, str]],
     position_lookup: Dict[int, str],
 ) -> pd.DataFrame:
-    """One row per FPL player with live price, status and club."""
+    """One row per FPL player with live price, status, club and ownership."""
+    # Crowd features on the scale Phase 2 uses: per manager. Transfers made so
+    # far this window, so a run long before the deadline sees a partial count.
+    managers = float(bootstrap.get("total_players") or 0) or np.nan
     rows = []
     for element in bootstrap["elements"]:
         team = team_lookup.get(element.get("team"), {})
@@ -204,6 +207,9 @@ def build_live_players(
             "status": element.get("status", "u"),
             "chance_of_playing": element.get("chance_of_playing_next_round"),
             "news": (element.get("news") or "").strip(),
+            "own_share": float(element.get("selected_by_percent") or 0) / 100,
+            "own_change": (float(element.get("transfers_in_event") or 0)
+                           - float(element.get("transfers_out_event") or 0)) / managers,
         })
     frame = pd.DataFrame(rows)
     LOGGER.info("Live pool: %d players across %d clubs.", len(frame), frame["team"].nunique())

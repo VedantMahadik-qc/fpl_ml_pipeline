@@ -4,6 +4,7 @@ import pytest
 
 from fpl_features import (
     _rolling_over_appearances,
+    add_crowd_features,
     add_rolling_features,
     apply_benchwarmer_adjustments,
 )
@@ -62,3 +63,19 @@ def test_mid_window_transfer_rows_move_back_to_the_old_club():
     out = repair_club_labels(frame)
     assert out["team"].tolist() == ["Spurs", "Spurs", "Spurs", "Man City"]
     assert out["team_id"].tolist() == [19, 19, 19, 15]
+
+
+def test_crowd_features_are_per_manager_and_count_a_double_gameweek_once():
+    # Toy counts: player 3 stands in for the other thirteen squad slots.
+    # GW1 has 30 slots, so 2 managers; player 2 is on a double gameweek and
+    # must be counted once. GW2 has 60 slots, so 4 managers.
+    frame = pd.DataFrame({
+        "season": ["S"] * 4 + ["S"] * 2,
+        "gameweek": [1, 1, 1, 1, 2, 2],
+        "player_id": [1, 2, 2, 3, 1, 2],
+        "selected": [2, 1, 1, 27, 4, 56],
+        "transfers_balance": [0, 0, 0, 0, 2, -1],
+    })
+    out = add_crowd_features(frame)
+    np.testing.assert_allclose(out["own_share"], [1.0, 0.5, 0.5, 13.5, 1.0, 14.0])
+    np.testing.assert_allclose(out["own_change"], [0, 0, 0, 0, 0.5, -0.25])

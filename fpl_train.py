@@ -89,6 +89,7 @@ from sklearn.metrics import (
 
 # Defined in its own module, NOT here. A class pickled from a script is recorded
 # as `__main__.TwoStageModel` and then fails to load from any other entry point.
+from fpl_features import CROWD_FEATURES
 from fpl_models import SeedAveragedClassifier, SeedAveragedRegressor, TwoStageModel
 
 try:  # sklearn >= 1.4
@@ -153,6 +154,7 @@ class TrainConfig:
     odds_dropout: bool = True         # also train on an odds-masked copy of each row
     ensemble_size: int = 1            # seeds per stage, predictions averaged
     pooled: bool = True               # one model for all positions (+85 pts/season)
+    crowd: bool = False               # add ownership and net transfers as features
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -190,7 +192,8 @@ def add_position_indicators(frame: pd.DataFrame) -> Tuple[pd.DataFrame, List[str
     return frame, names
 
 
-def select_feature_columns(frame: pd.DataFrame, position_columns: Sequence[str]) -> List[str]:
+def select_feature_columns(frame: pd.DataFrame, position_columns: Sequence[str],
+                           crowd: bool = False) -> List[str]:
     """Allowlist: rolling features + pre-deadline knowns + FDR + position indicators."""
     rolling = sorted(c for c in frame.columns if ROLLING_PATTERN.search(c))
     if not rolling:
@@ -217,7 +220,14 @@ def select_feature_columns(frame: pd.DataFrame, position_columns: Sequence[str])
     if odds:
         LOGGER.info("Odds features found: %s", ", ".join(odds))
 
-    features = rolling + pre_deadline + fdr + odds + list(position_columns)
+    # Ownership is as of the deadline, but the raw `selected` and transfer
+    # counts stay blocked: only these per-manager versions are comparable
+    # across seasons with different numbers of managers.
+    crowd_columns = [c for c in CROWD_FEATURES if c in frame.columns] if crowd else []
+    if crowd and len(crowd_columns) < len(CROWD_FEATURES):
+        raise RuntimeError("--crowd needs own_share and own_change; rerun Phase 2.")
+
+    features = rolling + pre_deadline + fdr + odds + crowd_columns + list(position_columns)
     LOGGER.info("Feature matrix: %d columns (%d rolling, %d pre-deadline, %d FDR, %d odds, "
                 "%d position).", len(features), len(rolling), len(pre_deadline), len(fdr),
                 len(odds), len(position_columns))
@@ -833,7 +843,7 @@ def run_training(config: TrainConfig) -> Dict[str, Any]:
     frame = load_features(config.input_path)
     frame, position_columns = add_position_indicators(frame)
 
-    features = select_feature_columns(frame, position_columns)
+    features = select_feature_columns(frame, position_columns, config.crowd)
     assert_no_post_match_features(features)
 
     train, test = temporal_split(frame, config.train_seasons, config.test_season)
@@ -927,6 +937,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Seeds per stage, predictions averaged (default: 1)")
     parser.add_argument("--per-position", action="store_true",
                         help="Train a separate model per position instead of one pooled model")
+    parser.add_argument("--crowd", action="store_true",
+                        help="Add ownership share and net transfers as features")
     parser.add_argument("--no-odds-dropout", action="store_true",
                         help="Train only on rows as they are, without the odds-masked copy")
     parser.add_argument("--log-level", default="INFO",
@@ -947,7 +959,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         learning_rate=args.learning_rate, max_depth=args.max_depth,
         permutation_repeats=args.permutation_repeats, random_state=args.random_state,
         odds_dropout=not args.no_odds_dropout, ensemble_size=args.ensemble,
-        pooled=not args.per_position,
+        pooled=not args.per_position, crowd=args.crowd,
     )
 
     try:

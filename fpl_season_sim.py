@@ -67,6 +67,7 @@ import numpy as np
 import pandas as pd
 
 from fpl_features import (
+    CROWD_FEATURES,
     FDR_BASE_FEATURES,
     FeatureConfig,
     build_features,
@@ -112,6 +113,7 @@ class SimConfig:
     ensemble_size: int = 1            # seeds averaged inside each model
     chips: bool = False               # play Wildcard/Free Hit/Bench Boost/Triple Captain
     pooled: bool = True               # one model for all positions
+    crowd: bool = False               # ownership and net transfers as features
     chip_calendar: bool = False       # time chips by their best remaining week
     chip_reserve: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_CHIP_RESERVE))
     random_state: int = 42            # set per run from `seeds`
@@ -298,6 +300,12 @@ class SeasonData:
                 prices[int(pid)] = to_tenths(value)
         return prices
 
+    def crowd_at(self, t: int) -> pd.DataFrame:
+        """Ownership and net transfers as of deadline t (latest row at or before t)."""
+        columns = [c for c in CROWD_FEATURES if c in self.rows.columns]
+        rows = self.rows[self.rows["gameweek"] <= t]
+        return rows.groupby("player_id").tail(1).set_index("player_id")[columns]
+
     def team_ratings_at(self, t: int) -> pd.DataFrame:
         """Each club's rating going into its first match at or after deadline t."""
         ahead = self.ratings[self.ratings["gameweek"] >= t]
@@ -362,6 +370,11 @@ def project(data: SeasonData, t: int, horizon_end: int, players: Sequence[int],
     # Price as of the deadline, never a later gameweek's: price rises are partly
     # a reaction to results that have not happened yet.
     rows["gw_cost"] = rows["player_id"].map(lambda p: prices.get(int(p), np.nan) / 10)
+    # Likewise ownership: a player's first row after a blank would carry the
+    # transfers made after deadline t.
+    crowd = data.crowd_at(t)
+    for column in crowd.columns:
+        rows[column] = rows["player_id"].map(crowd[column])
 
     scored: Dict[str, pd.Series] = {}
     if "model" in projectors:
@@ -435,7 +448,7 @@ def train_bundles(features: pd.DataFrame, config: SimConfig,
     frame = features[features["total_points"].notna()].copy()
     frame["played"] = (pd.to_numeric(frame["minutes"], errors="coerce").fillna(0) > 0).astype(int)
     frame, position_columns = add_position_indicators(frame)
-    feature_columns = select_feature_columns(frame, position_columns)
+    feature_columns = select_feature_columns(frame, position_columns, config.crowd)
     assert_no_post_match_features(feature_columns)
 
     in_train = frame["season"].isin(config.train_seasons)
@@ -451,7 +464,8 @@ def train_bundles(features: pd.DataFrame, config: SimConfig,
     train_config = TrainConfig(train_seasons=tuple(config.train_seasons),
                                test_season=config.season, permutation_repeats=0,
                                random_state=config.random_state,
-                               ensemble_size=config.ensemble_size, pooled=config.pooled)
+                               ensemble_size=config.ensemble_size, pooled=config.pooled,
+                               crowd=config.crowd)
     pooled = fit_pooled(train, feature_columns, train_config) if config.pooled else None
     bundles: Dict[str, Dict[str, Any]] = {}
     for position in POSITIONS:
@@ -561,6 +575,10 @@ def play_deadline(manager: Manager, projection: pd.DataFrame, t: int,
         if not first_deadline else "",
         "transfers_out": "; ".join(str(name.get(p, p)) for p in sorted(sold)),
         "total_points": manager.total_points,
+        # Ids of who actually scored, after auto-subs (all 15 on a Bench
+        # Boost), so a run can be compared player by player with ownership.
+        "xi_ids": ";".join(str(p) for p in scored["final_xi"]),
+        "armband_id": scored["armband_id"] if scored["armband_id"] is not None else "",
     }
 
 
@@ -850,6 +868,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Seeds averaged inside each model stage")
     parser.add_argument("--per-position", action="store_true",
                         help="Train a separate model per position (the pre-pooled setup)")
+    parser.add_argument("--crowd", action="store_true",
+                        help="Add ownership share and net transfers as model features")
     parser.add_argument("--chips", action="store_true",
                         help="Let the bot play two of each chip, one per half-season")
     parser.add_argument("--chip-calendar", action="store_true",
@@ -879,7 +899,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         candidate_pool=args.candidate_pool, max_transfers_per_week=args.max_transfers,
         time_limit=args.time_limit, odds=not args.no_odds, seeds=tuple(args.seeds),
         ensemble_size=args.ensemble, chips=args.chips, chip_calendar=args.chip_calendar,
-        pooled=not args.per_position,
+        pooled=not args.per_position, crowd=args.crowd,
         benchmark_csv=Path(args.benchmark_csv) if args.benchmark_csv else None,
         output_dir=Path(args.output_dir),
     )

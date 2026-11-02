@@ -135,6 +135,10 @@ FDR_BASE_FEATURES: List[str] = [
     "fdr_opp_rating_known",         # 0 for promoted sides with no PL history
 ]
 
+# What managers know at the deadline (see add_crowd_features). Opt-in in
+# Phase 3 with --crowd.
+CROWD_FEATURES: List[str] = ["own_share", "own_change"]
+
 # Optional extras when --strength-source includes the FPL native ratings.
 FDR_FPL_FEATURES: List[str] = [
     "fdr_fpl_opp_defence",
@@ -309,6 +313,37 @@ def apply_benchwarmer_adjustments(
         LOGGER.warning("`expected_goals_conceded` not found — clean_sheet_probability is NaN.")
         frame["clean_sheet_probability"] = np.nan
 
+    return frame
+
+
+def add_crowd_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    What the crowd knows at the deadline: share of squads owning each player,
+    and the net transfers into him this gameweek, both per manager.
+
+    A row's `selected` and `transfers_balance` are as of THAT gameweek's
+    deadline: GW1 records zero transfers, and the change in `selected` from one
+    gameweek to the next matches the later gameweek's balance (r ~ 0.95, ~0.4
+    with the one after). So they are pre-deadline knowns, like the price.
+
+    The manager count is not in the data, but every squad holds fifteen
+    players, so the sum of `selected` over one gameweek is fifteen per manager.
+    """
+    frame = frame.copy()
+    if not {"selected", "transfers_balance"}.issubset(frame.columns):
+        LOGGER.warning("No ownership columns — crowd features left empty.")
+        for column in CROWD_FEATURES:
+            frame[column] = np.nan
+        return frame
+    selected = pd.to_numeric(frame["selected"], errors="coerce")
+    balance = pd.to_numeric(frame["transfers_balance"], errors="coerce")
+    # A double gameweek repeats a player's ownership; count it once.
+    once = frame.assign(_selected=selected).drop_duplicates(["season", "gameweek", "player_id"])
+    managers = once.groupby(["season", "gameweek"])["_selected"].sum() / 15
+    per_row = pd.MultiIndex.from_frame(frame[["season", "gameweek"]]).map(managers)
+    per_row = pd.Series(np.asarray(per_row, dtype=float), index=frame.index).replace(0, np.nan)
+    frame["own_share"] = selected / per_row
+    frame["own_change"] = balance / per_row
     return frame
 
 
@@ -1098,6 +1133,9 @@ def build_features(config: FeatureConfig) -> pd.DataFrame:
         from fpl_odds import attach_odds, build_odds_table
         table = build_odds_table(sorted(frame["season"].dropna().unique()))
         frame = attach_odds(frame, table)
+
+    # 2d. Ownership and net transfers at this deadline, also never rolled.
+    frame = add_crowd_features(frame)
 
     frame = flag_observed_metrics(frame, config.metrics)
     report_absent_metrics(frame, config.metrics)
