@@ -87,3 +87,25 @@ def test_finished_seasons_are_cached_for_good():
 
     assert season_finished("2025-26", date(2026, 10, 23))
     assert not season_finished("2026-27", date(2026, 10, 23))
+
+
+def test_failed_refresh_falls_back_to_stale_cache(tmp_path, monkeypatch):
+    import os
+    import time
+
+    import requests
+
+    from fpl_odds import fetch_season_odds
+
+    stale = tmp_path / "E0_2627.csv"
+    stale.write_text("HomeTeam,AwayTeam\nArsenal,Everton\n", encoding="utf-8")
+    old = time.time() - 48 * 3600
+    os.utime(stale, (old, old))
+
+    def unreachable(*args, **kwargs):
+        raise requests.ConnectionError("connection reset")
+
+    monkeypatch.setattr(requests, "get", unreachable)
+    raw = fetch_season_odds("2026-27", tmp_path)
+    assert raw is not None and raw["HomeTeam"].tolist() == ["Arsenal"]
+    assert fetch_season_odds("2026-27", tmp_path / "empty") is None

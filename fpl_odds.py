@@ -140,6 +140,12 @@ def fetch_season_odds(season: str, cache_dir: Path = ODDS_CACHE,
         response = requests.get(url, timeout=30, headers={"User-Agent": "fpl-ml-pipeline"})
         response.raise_for_status()
     except requests.RequestException as exc:
+        if path.exists():
+            # A stale copy still prices every match up to its download.
+            LOGGER.warning("Could not refresh odds for %s from %s (%s); using the cached "
+                           "copy from %s.", season, url, exc,
+                           time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime)))
+            return pd.read_csv(path, encoding="utf-8-sig")
         LOGGER.warning("Could not fetch odds for %s from %s: %s", season, url, exc)
         return None
 
